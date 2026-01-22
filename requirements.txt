@@ -2,3 +2,4 @@ google-generativeai
 gspread
 google-auth
 Pillow
+pandas
