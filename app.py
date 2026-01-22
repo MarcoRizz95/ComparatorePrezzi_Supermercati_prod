@@ -10,31 +10,18 @@ import re
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Scanner Spesa", layout="centered", page_icon="🛒")
 
-# CSS Semplificato (Rimosso lo sfondo per evitare conflitti di visibilità)
 st.markdown("""
     <style>
-    .header-box { 
-        padding: 20px; 
-        border-radius: 15px; 
-        border: 2px solid #e0e0e0;
-        margin-bottom: 20px;
-    }
-    .stButton>button { 
-        width: 100%; 
-        border-radius: 10px; 
-        height: 3.5em; 
-        font-weight: bold; 
-        background-color: #007bff; 
-        color: white;
-    }
+    .header-box { padding: 20px; border-radius: 15px; border: 2px solid #e0e0e0; margin-bottom: 20px; }
+    .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; font-weight: bold; background-color: #007bff; color: white; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- FUNZIONI DI SERVIZIO ---
 def clean_piva(piva):
+    if not piva: return ""
     solo_numeri = re.sub(r'\D', '', str(piva))
-    if not solo_numeri: return ""
-    return solo_numeri.zfill(11)
+    return solo_numeri.zfill(11) if solo_numeri else ""
 
 def clean_price(price_str):
     if isinstance(price_str, (int, float)): return float(price_str)
@@ -46,8 +33,6 @@ def clean_price(price_str):
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=API_KEY)
-    
-    # Credenziali Google Sheets
     google_info = dict(st.secrets)
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(google_info, scopes=scopes)
@@ -56,8 +41,6 @@ try:
     worksheet = sh.get_worksheet(0)
     ws_negozi = sh.worksheet("Anagrafe_Negozi")
     lista_negozi = ws_negozi.get_all_records()
-    
-    # MODELLO GEMINI 2.5 FLASH
     model = genai.GenerativeModel('models/gemini-2.5-flash')
 except Exception as e:
     st.error(f"Errore inizializzazione: {e}")
@@ -66,17 +49,14 @@ except Exception as e:
 if 'dati_analizzati' not in st.session_state:
     st.session_state.dati_analizzati = None
 
-# --- INTERFACCIA ---
 st.title("🛍️ Scanner Spesa")
 
 uploaded_file = st.file_uploader("Carica o scatta una foto dello scontrino", type=['jpg', 'jpeg', 'png'])
 
 if uploaded_file:
-    # Fix rotazione e visualizzazione
     img = ImageOps.exif_transpose(Image.open(uploaded_file))
-    st.image(img, caption="Scontrino caricato", use_container_width=True)
+    st.image(img, use_container_width=True)
     
-    # Pulsante di analisi ben visibile sotto l'immagine
     if st.button("🔍 ANALIZZA ORA"):
         with st.spinner("L'IA sta leggendo..."):
             try:
@@ -87,9 +67,8 @@ if uploaded_file:
                 st.session_state.dati_analizzati = json.loads(response.text.strip().replace('```json', '').replace('```', ''))
                 st.rerun()
             except Exception as e:
-                st.error(f"Errore durante l'analisi: {e}")
+                st.error(f"Errore analisi: {e}")
 
-# --- REVISIONE DATI ---
 if st.session_state.dati_analizzati:
     st.divider()
     st.subheader("📝 Revisione Dati")
@@ -97,26 +76,26 @@ if st.session_state.dati_analizzati:
     d = st.session_state.dati_analizzati
     testata = d.get('testata', {})
     
-    # Match P.IVA
+    # Match P.IVA sicuro
     piva_letta = clean_piva(testata.get('p_iva', ''))
-    match_negozio = next((n for n in lista_negozi if clean_piva(n['P_IVA']) == piva_letta), None)
+    match_negozio = next((n for n in lista_negozi if clean_piva(n.get('P_IVA', '')) == piva_letta), None) if piva_letta else None
     
-    # Determina valori suggeriti
+    # Determinazione valori suggeriti
     if match_negozio:
         insegna_def = match_negozio['Insegna_Standard']
         indirizzo_def = match_negozio['Indirizzo_Standard (Pulito)']
     else:
-        insegna_def = f"NUOVO ({piva_letta})"
+        insegna_def = f"NUOVO ({piva_letta})" if piva_letta else "SCONOSCIUTO"
         indirizzo_def = testata.get('indirizzo_letto', '')
 
+    # Formattazione data
     data_iso = testata.get('data_iso', '2026-01-01')
     try:
-        y, m, d_day = data_iso.split("-")
-        data_f_def = f"{d_day}/{m}/{y}"
+        y, m, day = data_iso.split("-")
+        data_f_def = f"{day}/{m}/{y}"
     except:
         data_f_def = data_iso
 
-    # Box per i dati del Negozio
     st.markdown('<div class="header-box">', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
@@ -126,14 +105,22 @@ if st.session_state.dati_analizzati:
         indirizzo_f = st.text_input("Indirizzo punto vendita", value=indirizzo_def).upper()
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Tabella Prodotti
-    df = pd.DataFrame(d.get('prodotti', []))
-    if not df.empty:
-        df.columns = ['Prodotto', 'Prezzo Un.', 'Qtà', 'Offerta', 'Nome Standard']
-        df['Prezzo Un.'] = df['Prezzo Un.'].apply(clean_price)
-        
+    # --- CREAZIONE TABELLA ROBUSTA ---
+    prodotti_raw = d.get('prodotti', [])
+    # Costruiamo noi la lista di dizionari con chiavi fisse per evitare il ValueError
+    lista_pulita = []
+    for p in prodotti_raw:
+        lista_pulita.append({
+            "Prodotto": str(p.get('nome_letto', '')).upper(),
+            "Prezzo Un.": clean_price(p.get('prezzo_unitario', 0)),
+            "Qtà": float(p.get('quantita', 1)),
+            "Offerta": str(p.get('is_offerta', 'NO')).upper(),
+            "Nome Standard": str(p.get('nome_standard', '')).upper()
+        })
+    
+    if lista_pulita:
+        df = pd.DataFrame(lista_pulita)
         st.write("### Articoli rilevati")
-        st.info("💡 Clicca sulle celle per correggere. Premi INVIO dopo ogni modifica.")
         edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic", hide_index=True)
 
         if st.button("💾 SALVA NEL DATABASE"):
