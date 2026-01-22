@@ -8,21 +8,25 @@ import pandas as pd
 import re
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="Scanner Spesa Pro", layout="centered", page_icon="🛒")
+st.set_page_config(page_title="Scanner Spesa", layout="centered", page_icon="🛒")
 
-# CSS per il look "App"
+# CSS Semplificato (Rimosso lo sfondo per evitare conflitti di visibilità)
 st.markdown("""
     <style>
-    .stApp { background-color: #f8f9fa; }
     .header-box { 
-        background-color: #ffffff; 
-        padding: 25px; 
+        padding: 20px; 
         border-radius: 15px; 
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
+        border: 2px solid #e0e0e0;
         margin-bottom: 20px;
-        border: 1px solid #e9ecef;
     }
-    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; font-weight: bold; }
+    .stButton>button { 
+        width: 100%; 
+        border-radius: 10px; 
+        height: 3.5em; 
+        font-weight: bold; 
+        background-color: #007bff; 
+        color: white;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -35,30 +39,16 @@ def clean_piva(piva):
 def clean_price(price_str):
     if isinstance(price_str, (int, float)): return float(price_str)
     cleaned = re.sub(r'[^\d,.-]', '', str(price_str)).replace(',', '.')
-    try:
-        return float(cleaned)
-    except:
-        return 0.0
+    try: return float(cleaned)
+    except: return 0.0
 
-# --- CONNESSIONE AI E DATABASE ---
+# --- CONNESSIONE ---
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=API_KEY)
     
-    # Carichiamo credenziali Google Sheets (Struttura Piatta)
-    google_info = {
-        "type": st.secrets["type"],
-        "project_id": st.secrets["project_id"],
-        "private_key_id": st.secrets["private_key_id"],
-        "private_key": st.secrets["private_key"],
-        "client_email": st.secrets["client_email"],
-        "client_id": st.secrets["client_id"],
-        "auth_uri": st.secrets["auth_uri"],
-        "token_uri": st.secrets["token_uri"],
-        "auth_provider_x509_cert_url": st.secrets["auth_provider_x509_cert_url"],
-        "client_x509_cert_url": st.secrets["client_x509_cert_url"]
-    }
-    
+    # Credenziali Google Sheets
+    google_info = dict(st.secrets)
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(google_info, scopes=scopes)
     gc = gspread.authorize(creds)
@@ -79,14 +69,16 @@ if 'dati_analizzati' not in st.session_state:
 # --- INTERFACCIA ---
 st.title("🛍️ Scanner Spesa")
 
-uploaded_file = st.file_uploader("Carica scontrino", type=['jpg', 'jpeg', 'png'], label_visibility="collapsed")
+uploaded_file = st.file_uploader("Carica o scatta una foto dello scontrino", type=['jpg', 'jpeg', 'png'])
 
 if uploaded_file:
+    # Fix rotazione e visualizzazione
     img = ImageOps.exif_transpose(Image.open(uploaded_file))
-    st.image(img, use_container_width=True)
+    st.image(img, caption="Scontrino caricato", use_container_width=True)
     
-    if st.button("🔍 ANALIZZA SCONTRINO"):
-        with st.spinner("Analisi con Gemini 2.5 Flash in corso..."):
+    # Pulsante di analisi ben visibile sotto l'immagine
+    if st.button("🔍 ANALIZZA ORA"):
+        with st.spinner("L'IA sta leggendo..."):
             try:
                 prompt = """Analizza lo scontrino. Estrai: p_iva, indirizzo_letto, data_iso (YYYY-MM-DD). 
                 Per ogni prodotto: nome_letto, prezzo_unitario, quantita, is_offerta, nome_standard. 
@@ -99,16 +91,17 @@ if uploaded_file:
 
 # --- REVISIONE DATI ---
 if st.session_state.dati_analizzati:
+    st.divider()
+    st.subheader("📝 Revisione Dati")
+    
     d = st.session_state.dati_analizzati
     testata = d.get('testata', {})
     
-    # Match P.IVA (Eseguito in Python)
+    # Match P.IVA
     piva_letta = clean_piva(testata.get('p_iva', ''))
     match_negozio = next((n for n in lista_negozi if clean_piva(n['P_IVA']) == piva_letta), None)
     
-    st.subheader("📝 Revisione Dati")
-    
-    # Determinazione valori default
+    # Determina valori suggeriti
     if match_negozio:
         insegna_def = match_negozio['Insegna_Standard']
         indirizzo_def = match_negozio['Indirizzo_Standard (Pulito)']
@@ -118,19 +111,19 @@ if st.session_state.dati_analizzati:
 
     data_iso = testata.get('data_iso', '2026-01-01')
     try:
-        parti = data_iso.split("-")
-        data_f_def = f"{parti[2]}/{parti[1]}/{parti[0]}"
+        y, m, d_day = data_iso.split("-")
+        data_f_def = f"{d_day}/{m}/{y}"
     except:
         data_f_def = data_iso
 
-    # Box Bianco per la Testata
+    # Box per i dati del Negozio
     st.markdown('<div class="header-box">', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
         insegna_f = st.text_input("Supermercato", value=insegna_def).upper()
-        data_f = st.text_input("Data (DD/MM/YYYY)", value=data_f_def)
+        data_f = st.text_input("Data scontrino", value=data_f_def)
     with c2:
-        indirizzo_f = st.text_input("Indirizzo", value=indirizzo_def).upper()
+        indirizzo_f = st.text_input("Indirizzo punto vendita", value=indirizzo_def).upper()
     st.markdown('</div>', unsafe_allow_html=True)
 
     # Tabella Prodotti
@@ -140,6 +133,7 @@ if st.session_state.dati_analizzati:
         df['Prezzo Un.'] = df['Prezzo Un.'].apply(clean_price)
         
         st.write("### Articoli rilevati")
+        st.info("💡 Clicca sulle celle per correggere. Premi INVIO dopo ogni modifica.")
         edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic", hide_index=True)
 
         if st.button("💾 SALVA NEL DATABASE"):
@@ -155,8 +149,8 @@ if st.session_state.dati_analizzati:
                     ])
                 worksheet.append_rows(final_rows)
                 st.balloons()
-                st.success(f"✅ Salvati {len(final_rows)} prodotti!")
+                st.success("✅ Salvataggio completato!")
                 st.session_state.dati_analizzati = None
                 st.rerun()
             except Exception as e:
-                st.error(f"Errore nel salvataggio: {e}")
+                st.error(f"Errore durante il salvataggio: {e}")
