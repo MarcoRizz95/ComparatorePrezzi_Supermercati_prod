@@ -1,19 +1,20 @@
+import streamlit as st
+import google.generativeai as genai
 import gspread
 from google.oauth2.service_account import Credentials
 import json
-from PIL import Image
-from PIL import Image, ImageOps # Aggiunto ImageOps per la rotazione
-import pandas as pd # Aggiunto per gestire le tabelle editabili
+from PIL import Image, ImageOps 
+import pandas as pd
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="Master Scanner V11", layout="centered", page_icon="🛒")
 st.set_page_config(page_title="Scanner Prezzi V12", layout="wide", page_icon="🛒")
 
 # --- CONNESSIONE AI E DATABASE ---
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=API_KEY)
-
+    
+    # Caricamento credenziali Google (struttura piatta)
     google_info = {
         "type": st.secrets["type"],
         "project_id": st.secrets["project_id"],
@@ -27,232 +28,134 @@ try:
         "client_x509_cert_url": st.secrets["client_x509_cert_url"]
     }
     
-    google_info = dict(st.secrets) # Carica tutti i segreti piatti
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(google_info, scopes=scopes)
     gc = gspread.authorize(creds)
     sh = gc.open("Database_Prezzi")
-    
-    # Foglio Database Prezzi (Primo tab)
     worksheet = sh.get_worksheet(0)
-    
-    # Lettura Anagrafe Negozi (Secondo tab - 4 COLONNE)
-    try:
-        ws_negozi = sh.worksheet("Anagrafe_Negozi")
-        lista_negozi = ws_negozi.get_all_records()
-    except:
-        lista_negozi = []
-        st.error("Errore: Tab 'Anagrafe_Negozi' non trovato o colonne non corrette.")
     ws_negozi = sh.worksheet("Anagrafe_Negozi")
     lista_negozi = ws_negozi.get_all_records()
 
-    # Lettura Glossario Prodotti per Normalizzazione
-    try:
-        dati_db = worksheet.get_all_records()
-        glossario_prodotti = list(set([str(r.get('Nome Standard Proposto', '')).upper() for r in dati_db if r.get('Nome Standard Proposto')]))
-    except:
-        glossario_prodotti = []
-
-    # Modello Gemini 1.5 Pro
-    model = genai.GenerativeModel('models/gemini-2.5-flash')
-    
+    # Modello Pro per massima precisione
     model = genai.GenerativeModel('models/gemini-1.5-pro')
 except Exception as e:
-    st.error(f"Errore di configurazione: {e}")
-    st.error(f"Errore configurazione: {e}")
+    st.error(f"Errore configurazione iniziale: {e}")
     st.stop()
 
-# --- INIZIALIZZAZIONE MEMORIA DI SESSIONE ---
+# --- MEMORIA DI SESSIONE ---
 if 'dati_analizzati' not in st.session_state:
     st.session_state.dati_analizzati = None
 
 # --- INTERFACCIA ---
-st.title("🛒 Scanner Scontrini - v3")
-st.write("Versione 11 - Match Punti Vendita Multilivello")
-st.title("🛒 Scanner Scontrini Editabile")
+st.title("🛒 Scanner Scontrini con Revisione")
 
-uploaded_file = st.file_uploader("Carica o scatta una foto dello scontrino", type=['jpg', 'jpeg', 'png'])
 uploaded_file = st.file_uploader("Scatta o carica foto", type=['jpg', 'jpeg', 'png'])
 
 if uploaded_file:
-    img = Image.open(uploaded_file)
-    st.image(img, caption="Scontrino caricato", use_container_width=True)
-    # 1. FIX ROTAZIONE IMMAGINE
+    # Fix rotazione immagine
     img_raw = Image.open(uploaded_file)
-    img = ImageOps.exif_transpose(img_raw) # Raddrizza la foto basandosi sui sensori del telefono
+    img = ImageOps.exif_transpose(img_raw)
     
-    col1, col2 = st.columns([1, 1])
+    col_img, col_btn = st.columns([1, 1])
     
-    with col1:
+    with col_img:
         st.image(img, caption="Scontrino acquisito", use_container_width=True)
 
-    if st.button("Analizza e Salva"):
-        with st.spinner("Analisi e ricerca match in corso..."):
-            try:
-                # Costruiamo l'elenco dei negozi per l'IA (usando le tue 4 colonne)
-    with col2:
-        if st.button("🚀 Inizia Analisi AI"):
-            with st.spinner("L'IA sta leggendo..."):
-                negozi_str = ""
-                for i, n in enumerate(lista_negozi):
-                    negozi_str += f"ID {i}: {n['Insegna_Standard']} | P.IVA: {n['P_IVA']} | Indirizzo Scontrino: {n['Indirizzo_Scontrino (Grezzo)']} | Indirizzo Pulito: {n['Indirizzo_Standard (Pulito)']}\n"
-                    negozi_str += f"ID {i}: {n['Insegna_Standard']} | {n['Indirizzo_Scontrino (Grezzo)']} | P.IVA {n['P_IVA']}\n"
-
-                prompt = f"""
-                Analizza questo scontrino.
-                
-                NEGOZI CONOSCIUTI:
-                {negozi_str}
-
-                PRODOTTI CONOSCIUTI:
-                {", ".join(glossario_prodotti[:100])}
-
-                ISTRUZIONI:
-                1. Estrai DATA (YYYY-MM-DD), P_IVA e INDIRIZZO dallo scontrino.
-                2. Trova il match con 'NEGOZI CONOSCIUTI'. Restituisci l'ID se corrisponde P.IVA e l'indirizzo è simile a uno degli indirizzi conosciuti. Altrimenti 'NUOVO'.
-                3. Estrai ogni prodotto: nome_letto, prezzo_unitario, quantita, is_offerta, nome_standard (se simile a prodotti conosciuti).
-                4. SCONTI: Sottrai righe negative al prodotto precedente.
-                5. NO AGGREGAZIONE: Una riga per ogni articolo fisico.
-
-                RISPONDI SOLO JSON:
-                {{
-                  "match_id": "ID o NUOVO",
-                  "testata": {{ "p_iva": "", "indirizzo_letto": "", "data_iso": "" }},
-                  "prodotti": [
-                    {{ "nome_letto": "", "prezzo_unitario": 0.0, "quantita": 1, "is_offerta": "SI/NO", "nome_standard": "" }}
-                  ]
-                }}
-                """
-                prompt = f"""Analizza lo scontrino. Negozi conosciuti: {negozi_str}. 
-                Restituisci JSON con: match_id (ID o NUOVO), testata (p_iva, indirizzo_letto, data_iso), 
-                prodotti (nome_letto, prezzo_unitario, quantita, is_offerta, nome_standard)."""
-
-                response = model.generate_content([prompt, img])
-                dati = json.loads(response.text.strip().replace('```json', '').replace('```', ''))
-                
-                st.subheader("Payload JSON")
-                st.json(dati)
-
-                # --- ELABORAZIONE E NORMALIZZAZIONE ---
-                testata = dati.get('testata', {})
-                match_id = dati.get('match_id', 'NUOVO')
-                
-                if str(match_id).isdigit() and int(match_id) < len(lista_negozi):
-                    # Match trovato: usiamo i dati dell'anagrafe
-                    negozio = lista_negozi[int(match_id)]
-                    insegna = str(negozio['Insegna_Standard']).upper()
-                    indirizzo = str(negozio['Indirizzo_Standard (Pulito)']).upper()
-                else:
-                    # Nessun match: usiamo dati grezzi
-                    p_iva = str(testata.get('p_iva', '')).replace(' ', '')
-                    insegna = f"NUOVO ({p_iva})".upper()
-                    indirizzo = str(testata.get('indirizzo_letto', 'DA VERIFICARE')).upper()
-
-                # Formattazione Data (YYYY-MM-DD -> DD/MM/YYYY)
-                d_raw = testata.get('data_iso', '2026-01-01')
+    with col_btn:
+        st.write("### Azioni")
+        if st.button("🚀 Avvia Analisi AI"):
+            with st.spinner("L'IA sta leggendo lo scontrino..."):
                 try:
-                    y, m, d = d_raw.split('-')
-                    data_ita = f"{d}/{m}/{y}"
-                except:
-                    data_ita = d_raw
+                    # Preparazione contesto negozi
+                    negozi_str = ""
+                    for i, n in enumerate(lista_negozi):
+                        negozi_str += f"ID {i}: {n['Insegna_Standard']} | {n['Indirizzo_Scontrino (Grezzo)']} | P.IVA {n['P_IVA']}\n"
 
-                # Creazione righe
-                righe_da_scrivere = []
-                for p in dati.get('prodotti', []):
-                    p_unitario = float(p.get('prezzo_unitario', 0))
-                    qt = float(p.get('quantita', 1))
+                    prompt = f"""Analizza lo scontrino. 
+                    NEGOZI CONOSCIUTI: {negozi_str}
+                    REGOLE: 
+                    - Sconti: sottrai al prodotto sopra.
+                    - Moltiplicazioni: usa il prezzo unitario.
+                    - Match Negozio: restituisci l'ID se lo trovi, altrimenti 'NUOVO'.
+                    RESTITUISCI SOLO JSON:
+                    {{
+                      "match_id": "ID o NUOVO",
+                      "testata": {{ "p_iva": "", "indirizzo_letto": "", "data_iso": "YYYY-MM-DD" }},
+                      "prodotti": [
+                        {{ "nome_letto": "", "prezzo_unitario": 0.0, "quantita": 1, "is_offerta": "SI/NO", "nome_standard": "" }}
+                      ]
+                    }}"""
                     
-                    righe_da_scrivere.append([
-                        data_ita,
-                        insegna,
-                        indirizzo,
-                        str(p.get('nome_letto', '')).upper(),
-                        p_unitario * qt,
-                        0, # Sconto (già calcolato)
-                        p_unitario,
-                        p.get('is_offerta', 'NO'),
-                        qt,
-                        "SI",
-                        str(p.get('nome_standard', p.get('nome_letto', ''))).upper()
-                    ])
-                res_json = json.loads(response.text.strip().replace('```json', '').replace('```', ''))
+                    response = model.generate_content([prompt, img])
+                    res_json = json.loads(response.text.strip().replace('```json', '').replace('```', ''))
+                    
+                    # Salvataggio in sessione
+                    st.session_state.dati_analizzati = res_json
+                    st.success("Analisi completata! Controlla i dati qui sotto.")
+                except Exception as e:
+                    st.error(f"Errore analisi: {e}")
 
-                if righe_da_scrivere:
-                    worksheet.append_rows(righe_da_scrivere)
-                    st.success(f"✅ Salvati {len(righe_da_scrivere)} prodotti per {insegna}!")
-                else:
-                    st.warning("Nessun prodotto trovato.")
-                # Salviamo i dati nella sessione per permettere la modifica
-                st.session_state.dati_analizzati = res_json
-                st.success("Analisi completata! Ora puoi controllare e modificare i dati qui sotto.")
-
-# --- STEP DI CONTROLLO E MODIFICA ---
+# --- AREA DI REVISIONE (appare solo dopo l'analisi) ---
 if st.session_state.dati_analizzati:
     st.divider()
-    st.subheader("📝 Revisione Dati Estratti")
+    st.subheader("📝 Controlla e Modifica i Dati")
     
     dati = st.session_state.dati_analizzati
     testata = dati.get('testata', {})
     match_id = dati.get('match_id', 'NUOVO')
 
-    # Parte 1: Testata (Insegna e Data)
+    # Sezione 1: Testata editabile
     c1, c2, c3 = st.columns(3)
     with c1:
-        # Se c'è un match_id, pre-impostiamo il nome dall'anagrafe
-        nome_default = testata.get('insegna_letta', 'SCONOSCIUTO')
-        if str(match_id).isdigit():
-            nome_default = lista_negozi[int(match_id)]['Insegna_Standard']
-        insegna_final = st.text_input("Insegna Supermercato", value=nome_default).upper()
+        # Recupero nome da anagrafe se c'è un match
+        n_def = testata.get('p_iva', 'SCONOSCIUTO')
+        if str(match_id).isdigit() and int(match_id) < len(lista_negozi):
+            n_def = lista_negozi[int(match_id)]['Insegna_Standard']
+        insegna_f = st.text_input("Supermercato", value=str(n_def).upper())
     
     with c2:
-        indirizzo_default = testata.get('indirizzo_letto', 'DA VERIFICARE')
-        if str(match_id).isdigit():
-            indirizzo_default = lista_negozi[int(match_id)]['Indirizzo_Standard (Pulito)']
-        indirizzo_final = st.text_input("Indirizzo Punto Vendita", value=indirizzo_default).upper()
+        i_def = testata.get('indirizzo_letto', 'DA VERIFICARE')
+        if str(match_id).isdigit() and int(match_id) < len(lista_negozi):
+            i_def = lista_negozi[int(match_id)]['Indirizzo_Standard (Pulito)']
+        indirizzo_f = st.text_input("Indirizzo", value=str(i_def).upper())
     
     with c3:
-        data_final = st.text_input("Data (DD/MM/YYYY)", value="/".join(testata.get('data_iso', '2026-01-01').split('-')[::-1]))
-
-            except Exception as e:
-                st.error(f"Errore: {e}")
-    # Parte 2: Tabella Prodotti Editabile
-    df_prodotti = pd.DataFrame(dati.get('prodotti', []))
-    
-    # Rinominiamo le colonne per chiarezza nell'editor
-    df_prodotti = df_prodotti.rename(columns={
-        'nome_letto': 'Prodotto (Scontrino)',
-        'prezzo_unitario': 'Prezzo Unitario',
-        'quantita': 'Qtà',
-        'is_offerta': 'In Offerta',
-        'nome_standard': 'Nome Normalizzato'
-    })
-
-    st.write("Modifica i prodotti direttamente nella tabella:")
-    edited_df = st.data_editor(df_prodotti, use_container_width=True, num_rows="dynamic")
-
-    # BOTTONE FINALE DI CONFERMA
-    if st.button("💾 Conferma e Salva nel Database"):
+        # Formattazione data YYYY-MM-DD -> DD/MM/YYYY
+        d_iso = testata.get('data_iso', '2026-01-01')
         try:
-            nuove_righe = []
-            for _, row in edited_df.iterrows():
-                nuove_righe.append([
-                    data_final,
-                    insegna_final,
-                    indirizzo_final,
-                    str(row['Prodotto (Scontrino)']).upper(),
-                    float(row['Prezzo Unitario']) * float(row['Qtà']),
-                    0, # Sconto
-                    float(row['Prezzo Unitario']),
-                    row['In Offerta'],
-                    row['Qtà'],
-                    "SI",
-                    str(row['Nome Normalizzato']).upper()
-                ])
-            
-            worksheet.append_rows(nuove_righe)
-            st.balloons()
-            st.success("✅ Dati salvati con successo! Database aggiornato.")
-            # Resettiamo la sessione per il prossimo scontrino
-            st.session_state.dati_analizzati = None
-            st.button("Carica un altro scontrino")
-        except Exception as e:
+            d_ita = "/".join(d_iso.split("-")[::-1])
+        except:
+            d_ita = d_iso
+        data_f = st.text_input("Data scontrino", value=d_ita)
+
+    # Sezione 2: Tabella Prodotti Editabile
+    df = pd.DataFrame(dati.get('prodotti', []))
+    if not df.empty:
+        # Rinominazione colonne per l'utente
+        df.columns = ['Prodotto (Scontrino)', 'Prezzo Unit.', 'Qtà', 'Offerta', 'Nome Standard']
+        st.write("Puoi modificare i prezzi e i nomi cliccando nelle celle:")
+        edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic")
+
+        # Bottone di salvataggio finale
+        if st.button("💾 Conferma e Salva tutto nel Database"):
+            try:
+                final_rows = []
+                for _, row in edited_df.iterrows():
+                    final_rows.append([
+                        data_f, insegna_f, indirizzo_f,
+                        str(row['Prodotto (Scontrino)']).upper(),
+                        float(row['Prezzo Unit.']) * float(row['Qtà']),
+                        0, # Sconto (già calcolato)
+                        float(row['Prezzo Unit.']),
+                        row['Offerta'],
+                        row['Qtà'],
+                        "SI",
+                        str(row['Nome Standard']).upper()
+                    ])
+                
+                worksheet.append_rows(final_rows)
+                st.balloons()
+                st.success(f"✅ Grandioso! {len(final_rows)} righe salvate correttamente.")
+                st.session_state.dati_analizzati = None # Reset
+            except Exception as e:
+                st.error(f"Errore salvataggio: {e}")
