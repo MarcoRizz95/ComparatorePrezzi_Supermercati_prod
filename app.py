@@ -10,7 +10,7 @@ import re
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Scanner Spesa Pro", layout="centered", page_icon="🛒")
 
-# CSS per il look "App" (Corretto unsafe_allow_html)
+# CSS per il look "App"
 st.markdown("""
     <style>
     .stApp { background-color: #f8f9fa; }
@@ -28,7 +28,6 @@ st.markdown("""
 
 # --- FUNZIONI DI SERVIZIO ---
 def clean_piva(piva):
-    # Estrae solo i numeri e forza a 11 cifre aggiungendo zeri se mancano
     solo_numeri = re.sub(r'\D', '', str(piva))
     if not solo_numeri: return ""
     return solo_numeri.zfill(11)
@@ -36,16 +35,30 @@ def clean_piva(piva):
 def clean_price(price_str):
     if isinstance(price_str, (int, float)): return float(price_str)
     cleaned = re.sub(r'[^\d,.-]', '', str(price_str)).replace(',', '.')
-    try: return float(cleaned)
-    except: return 0.0
+    try:
+        return float(cleaned)
+    except:
+        return 0.0
 
 # --- CONNESSIONE AI E DATABASE ---
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=API_KEY)
     
-    # Carichiamo credenziali Google Sheets
-    google_info = dict(st.secrets)
+    # Carichiamo credenziali Google Sheets (Struttura Piatta)
+    google_info = {
+        "type": st.secrets["type"],
+        "project_id": st.secrets["project_id"],
+        "private_key_id": st.secrets["private_key_id"],
+        "private_key": st.secrets["private_key"],
+        "client_email": st.secrets["client_email"],
+        "client_id": st.secrets["client_id"],
+        "auth_uri": st.secrets["auth_uri"],
+        "token_uri": st.secrets["token_uri"],
+        "auth_provider_x509_cert_url": st.secrets["auth_provider_x509_cert_url"],
+        "client_x509_cert_url": st.secrets["client_x509_cert_url"]
+    }
+    
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(google_info, scopes=scopes)
     gc = gspread.authorize(creds)
@@ -54,7 +67,7 @@ try:
     ws_negozi = sh.worksheet("Anagrafe_Negozi")
     lista_negozi = ws_negozi.get_all_records()
     
-    # IMPOSTATO MODELLO GEMINI 2.5 FLASH
+    # MODELLO GEMINI 2.5 FLASH
     model = genai.GenerativeModel('models/gemini-2.5-flash')
 except Exception as e:
     st.error(f"Errore inizializzazione: {e}")
@@ -74,11 +87,15 @@ if uploaded_file:
     
     if st.button("🔍 ANALIZZA SCONTRINO"):
         with st.spinner("Analisi con Gemini 2.5 Flash in corso..."):
-            prompt = """Analizza lo scontrino. Estrai: p_iva, indirizzo_letto, data_iso (YYYY-MM-DD). 
-            Per ogni prodotto: nome_letto, prezzo_unitario, quantita, is_offerta, nome_standard. 
-            SCONTI: Sottrai righe negative al prodotto precedente. NO AGGREGAZIONE. Restituisci JSON."""
-            response = model.generate_content([prompt, img])
-            st.session_state.dati_analizzati = json.loads(response.text.strip().replace('```json', '').replace('```', ''))
+            try:
+                prompt = """Analizza lo scontrino. Estrai: p_iva, indirizzo_letto, data_iso (YYYY-MM-DD). 
+                Per ogni prodotto: nome_letto, prezzo_unitario, quantita, is_offerta, nome_standard. 
+                SCONTI: Sottrai righe negative al prodotto precedente. NO AGGREGAZIONE. Restituisci JSON."""
+                response = model.generate_content([prompt, img])
+                st.session_state.dati_analizzati = json.loads(response.text.strip().replace('```json', '').replace('```', ''))
+                st.rerun()
+            except Exception as e:
+                st.error(f"Errore durante l'analisi: {e}")
 
 # --- REVISIONE DATI ---
 if st.session_state.dati_analizzati:
@@ -91,32 +108,34 @@ if st.session_state.dati_analizzati:
     
     st.subheader("📝 Revisione Dati")
     
+    # Determinazione valori default
+    if match_negozio:
+        insegna_def = match_negozio['Insegna_Standard']
+        indirizzo_def = match_negozio['Indirizzo_Standard (Pulito)']
+    else:
+        insegna_def = f"NUOVO ({piva_letta})"
+        indirizzo_def = testata.get('indirizzo_letto', '')
+
+    data_iso = testata.get('data_iso', '2026-01-01')
+    try:
+        parti = data_iso.split("-")
+        data_f_def = f"{parti[2]}/{parti[1]}/{parti[0]}"
+    except:
+        data_f_def = data_iso
+
     # Box Bianco per la Testata
-    with st.container():
-        # Definiamo i valori di default basandoci sull'anagrafe
-        if match_negozio:
-            insegna_def = match_negozio['Insegna_Standard']
-            indirizzo_def = match_negozio['Indirizzo_Standard (Pulito)']
-        else:
-            insegna_def = f"NUOVO ({piva_letta})"
-            indirizzo_def = testata.get('indirizzo_letto', '')
-
-        data_iso = testata.get('data_iso', '2026-01-01')
-        data_f_def = "/".join(data_iso.split("-")[::-1])
-
-        st.markdown('<div class="header-box">', unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            insegna_f = st.text_input("Supermercato", value=insegna_def).upper()
-            data_f = st.text_input("Data (DD/MM/YYYY)", value=data_f_def)
-        with c2:
-            indirizzo_f = st.text_input("Indirizzo", value=indirizzo_def).upper()
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="header-box">', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        insegna_f = st.text_input("Supermercato", value=insegna_def).upper()
+        data_f = st.text_input("Data (DD/MM/YYYY)", value=data_f_def)
+    with c2:
+        indirizzo_f = st.text_input("Indirizzo", value=indirizzo_def).upper()
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # Tabella Prodotti
     df = pd.DataFrame(d.get('prodotti', []))
     if not df.empty:
-        # Pulizia estetica DataFrame
         df.columns = ['Prodotto', 'Prezzo Un.', 'Qtà', 'Offerta', 'Nome Standard']
         df['Prezzo Un.'] = df['Prezzo Un.'].apply(clean_price)
         
@@ -137,3 +156,7 @@ if st.session_state.dati_analizzati:
                 worksheet.append_rows(final_rows)
                 st.balloons()
                 st.success(f"✅ Salvati {len(final_rows)} prodotti!")
+                st.session_state.dati_analizzati = None
+                st.rerun()
+            except Exception as e:
+                st.error(f"Errore nel salvataggio: {e}")
