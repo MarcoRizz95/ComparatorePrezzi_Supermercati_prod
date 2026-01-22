@@ -37,7 +37,7 @@ try:
     lista_negozi = ws_negozi.get_all_records()
 
     # Modello Pro per massima precisione
-    model = genai.GenerativeModel('models/gemini-1.5-pro')
+    model = genai.GenerativeModel('models/gemini-2.5-flash')
 except Exception as e:
     st.error(f"Errore configurazione iniziale: {e}")
     st.stop()
