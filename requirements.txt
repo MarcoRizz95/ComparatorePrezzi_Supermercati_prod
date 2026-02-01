@@ -4,4 +4,4 @@ google-auth
 Pillow
 geopy
 streamlit-js-eval
-request
+requests
