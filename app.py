@@ -63,7 +63,7 @@ except Exception as e:
     st.error(f"Errore connessione: {e}")
     st.stop()
 
-st.title("🛍️ Spesa Smart & Distanze")
+st.title("🛍️ Caricatore scontrini + Ricerca Prodotti & Distanze")
 
 # --- 3. RECUPERO GPS AUTOMATICO ---
 # Questa chiamata è posizionata fuori dai tab per essere sempre pronta
