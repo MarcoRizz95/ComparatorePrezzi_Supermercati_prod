@@ -99,7 +99,7 @@ with tab_carica:
                     prompt = f"""
                     ATTENZIONE: Se caricate più immagini, sono parti dello STESSO scontrino. Analizzale insieme come un unico documento.
 
-                    Agisci come un contabile esperto / come un OCR. Analizza lo scontrino con queste REGOLE FISSE:
+                    Agisci come un contabile esperto / OCR. Analizza lo scontrino con queste REGOLE FISSE:
 
                     1. SCONTI: Se vedi 'SCONTO', 'FIDATY', prezzi negativi (es: 1,50-S o -0,90) o sconti con "%" 
                        NON creare nuove righe. Sottrai il valore al prodotto sopra.
@@ -110,8 +110,7 @@ with tab_carica:
 
                     3. NORMALIZZAZIONE: Usa i nomi da questa lista se corrispondono: {glossario[:150]}
 
-                    4. ESTREMA PRECISIONE: Non inventare prodotti e non "raggrupparli". 
-                       Se ci sono due righe uguali, non salvarne una unica con prezzo e quantità doppie.
+                    4. ESTREMA PRECISIONE: Non inventare prodotti e non "raggrupparli". Se ci sono due righe uguali, non salvarne una unica con prezzo e quantità doppie.
                        Ogni riga fisica deve essere letta.
 
                     JSON richiesto:
@@ -170,4 +169,44 @@ with tab_cerca:
 
     query = st.text_input("Cosa cerchi?", key="search_v29").upper().strip()
     
-    if qu
+    if query:
+        all_data = worksheet.get_all_records()
+        if all_data:
+            df_all = pd.DataFrame(all_data)
+            df_all.columns = [str(c).strip() for c in df_all.columns]
+            c_prod = get_col_name(df_all, 'PRODOTTO')
+            c_indirizzo = get_col_name(df_all, 'INDIRIZZO')
+            c_super = get_col_name(df_all, 'SUPERMERCATO')
+            c_prezzo = get_col_name(df_all, 'NETTO') or get_col_name(df_all, 'UNITARIO')
+            c_data = get_col_name(df_all, 'DATA')
+
+            mask = df_all[c_prod].astype(str).str.contains(query, na=False)
+            res = df_all[mask].copy()
+            
+            if not res.empty:
+                res[c_prezzo] = res[c_prezzo].apply(clean_price)
+                
+                def add_dist(row):
+                    if not st.session_state.my_lat: return 999
+                    # Match intelligente: cerchiamo nell'anagrafe l'indirizzo corrispondente alla riga
+                    addr_scontrino = re.sub(r'\W+', '', str(row[c_indirizzo])).upper()
+                    neg = next((n for n in lista_negozi_raw if re.sub(r'\W+', '', str(n.get('Indirizzo_Standard (Pulito)', ''))).upper() == addr_scontrino), None)
+                    
+                    if neg and neg.get('Latitudine'):
+                        try:
+                            t_lat = float(str(neg.get('Latitudine')).replace(',', '.'))
+                            t_lon = float(str(neg.get('Longitudine')).replace(',', '.'))
+                            return get_road_distance(st.session_state.my_lat, st.session_state.my_lon, t_lat, t_lon)
+                        except: return 888
+                    return 999
+
+                res['KM'] = res.apply(add_dist, axis=1)
+                res['dt'] = pd.to_datetime(res[c_data], format='%d/%m/%Y', errors='coerce')
+                res = res.sort_values(by='dt', ascending=False).drop_duplicates(subset=[c_super, c_indirizzo])
+                res = res.sort_values(by=c_prezzo)
+                
+                st.info(f"🏆 Più economico: **{res.iloc[0][c_super]}** a **€{res.iloc[0][c_prezzo]:.2f}**")
+                
+                disp = res[[c_prezzo, 'KM', c_super, c_indirizzo, c_data]]
+                disp.columns = ['€ Prezzo', 'Km Strada', 'Negozio', 'Indirizzo', 'Data']
+                st.dataframe(disp.sort_values(by='€ Prezzo'), use_container_width=True, hide_index=True)
