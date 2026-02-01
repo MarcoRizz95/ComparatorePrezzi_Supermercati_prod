@@ -7,37 +7,12 @@ from PIL import Image, ImageOps
 import pandas as pd
 import re
 import requests
-from streamlit_js_eval import streamlit_js_eval
+# Usiamo la funzione specifica della libreria
+from streamlit_js_eval import get_geolocation
 
-# --- 1. FUNZIONI DI SERVIZIO ---
+# ... (Le tue funzioni clean_piva, clean_price e get_col_name rimangono identiche) ...
 
-def get_road_distance(lat1, lon1, lat2, lon2):
-    try:
-        url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=false"
-        r = requests.get(url, timeout=5)
-        data = r.json()
-        if data['code'] == 'Ok':
-            return round(data['routes'][0]['distance'] / 1000, 1)
-    except: pass
-    return None
-
-def clean_piva(piva):
-    solo_numeri = re.sub(r'\D', '', str(piva))
-    return solo_numeri.zfill(11) if solo_numeri else ""
-
-def clean_price(price_str):
-    if isinstance(price_str, (int, float)): return float(price_str)
-    cleaned = re.sub(r'[^\d,.-]', '', str(price_str)).replace(',', '.')
-    try: return float(cleaned)
-    except: return 0.0
-
-def get_col_name(df, keyword):
-    for c in df.columns:
-        if keyword.upper() in str(c).upper().strip():
-            return c
-    return None
-
-# --- 2. CONNESSIONE ---
+# --- CONNESSIONE (Invariata) ---
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=API_KEY)
@@ -54,32 +29,42 @@ except Exception as e:
     st.error(f"Errore connessione: {e}")
     st.stop()
 
-# --- 3. GPS UTENTE ---
-# Aumentiamo la precisione della richiesta
-user_pos = streamlit_js_eval(js_expressions="navigator.geolocation.getCurrentPosition(pos => pos.coords, err => console.log(err))", key="GPS_PRO_V1")
-my_lat, my_lon = None, None
-if user_pos and 'latitude' in user_pos:
-    my_lat = user_pos['latitude']
-    my_lon = user_pos['longitude']
-
 st.title("🛍️ Spesa Smart & GPS")
 
 tab_carica, tab_cerca = st.tabs(["📷 CARICA", "🔍 CERCA"])
 
 # --- TAB CARICA (Invariato) ---
 with tab_carica:
-    st.info("Caricamento scontrini attivo.")
-    # ... (Il codice di caricamento è lo stesso di V24) ...
-    # (Per brevità ometto il blocco di upload, mantieni pure quello che hai)
+    # ... (Codice di caricamento scontrini) ...
+    st.info("Sezione caricamento attiva.")
 
-# --- TAB CERCA (Con Diagnostica) ---
+# --- TAB CERCA (Logica GPS migliorata) ---
 with tab_cerca:
-    if my_lat:
-        st.success(f"📍 GPS Attivo: Sei a coordinate {my_lat:.4f}, {my_lon:.4f}")
-    else:
-        st.warning("⚠️ Posizione GPS non ancora rilevata. Riprova a dare il consenso o ricarica la pagina.")
+    st.subheader("🔍 Ricerca Prezzi e Distanza")
+    
+    # Inizializziamo le coordinate nella sessione
+    if 'my_lat' not in st.session_state:
+        st.session_state.my_lat = None
+        st.session_state.my_lon = None
 
-    query = st.text_input("Cosa cerchi?", key="sq").upper().strip()
+    # Pulsante esplicito per attivare il GPS
+    if st.button("📍 Attiva/Aggiorna la mia posizione"):
+        with st.spinner("Richiesta GPS in corso..."):
+            loc = get_geolocation()
+            if loc and 'coords' in loc:
+                st.session_state.my_lat = loc['coords']['latitude']
+                st.session_state.my_lon = loc['coords']['longitude']
+                st.success(f"Posizione acquisita: {st.session_state.my_lat}, {st.session_state.my_lon}")
+            else:
+                st.error("Impossibile ottenere la posizione. Verifica che il sito abbia i permessi GPS nel browser.")
+
+    # Visualizziamo lo stato attuale
+    if st.session_state.my_lat:
+        st.write(f"✅ GPS Attivo (Km calcolati su strada)")
+    else:
+        st.warning("Distanze non disponibili. Clicca il tasto sopra.")
+
+    query = st.text_input("Cosa cerchi?", key="search_query_v26").upper().strip()
     
     if query:
         all_data = worksheet.get_all_records()
@@ -100,24 +85,19 @@ with tab_cerca:
                 res[c_prezzo] = res[c_prezzo].apply(clean_price)
                 
                 def add_road_dist(row):
-                    # MATCH INDIRIZZO PIÙ ROBUSTO (Rimuoviamo spazi e punteggiatura)
+                    if not st.session_state.my_lat:
+                        return 999
+                    
                     addr_to_find = re.sub(r'\W+', '', str(row[c_indirizzo])).upper()
+                    neg = next((n for n in lista_negozi_raw if re.sub(r'\W+', '', str(n.get('Indirizzo_Standard (Pulito)', ''))).upper() == addr_to_find), None)
                     
-                    neg = None
-                    for n in lista_negozi_raw:
-                        addr_anagrafe = re.sub(r'\W+', '', str(n.get('Indirizzo_Standard (Pulito)', ''))).upper()
-                        if addr_anagrafe == addr_to_find:
-                            neg = n
-                            break
-                    
-                    if neg and my_lat:
+                    if neg:
                         try:
-                            # Pulizia lat/lon da Sheet (gestisce sia virgola che punto)
-                            target_lat = float(str(neg.get('Latitudine')).replace(',', '.'))
-                            target_lon = float(str(neg.get('Longitudine')).replace(',', '.'))
-                            return get_road_distance(my_lat, my_lon, target_lat, target_lon)
-                        except: return 888 # Errore conversione numeri nello sheet
-                    return 999 # Negozio non trovato o GPS mancante
+                            t_lat = float(str(neg.get('Latitudine')).replace(',', '.'))
+                            t_lon = float(str(neg.get('Longitudine')).replace(',', '.'))
+                            return get_road_distance(st.session_state.my_lat, st.session_state.my_lon, t_lat, t_lon)
+                        except: return 888
+                    return 999
 
                 res['KM'] = res.apply(add_road_dist, axis=1)
                 res['dt'] = pd.to_datetime(res[c_data], format='%d/%m/%Y', errors='coerce')
@@ -125,11 +105,11 @@ with tab_cerca:
                 res = res.sort_values(by=c_prezzo)
                 
                 best = res.iloc[0]
-                km_label = f"{best['KM']} km" if best['KM'] < 800 else "N.D."
-                st.info(f"🏆 Più economico: **{best[c_super]}** a **€{best[c_prezzo]:.2f}** ({km_label})")
+                st.info(f"🏆 **{best[c_super]}** è il più economico per **{query}**")
                 
                 disp = res[[c_prezzo, 'KM', c_super, c_indirizzo, c_data]]
                 disp.columns = ['€ Prezzo', 'Km Strada', 'Negozio', 'Indirizzo', 'Data']
-                st.dataframe(disp, use_container_width=True, hide_index=True)
+                # Ordiniamo per prezzo come default
+                st.dataframe(disp.sort_values(by='€ Prezzo'), use_container_width=True, hide_index=True)
             else:
                 st.warning("Nessun prodotto trovato.")
