@@ -2,4 +2,6 @@ google-generativeai
 gspread
 google-auth
 Pillow
-pandas
+geopy
+streamlit-js-eval
+request
