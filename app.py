@@ -385,188 +385,102 @@ with tab_cerca:
                 else: st.info("Database vuoto.")
             except Exception as e:
                 st.error(f"Errore ricerca: {e}")
-# --- TAB 3: CARRELLO OTTIMIZZATO (Aggiornato) ---
+# --- TAB 3: DEBUGGING MODE ---
 with tab_carrello:
-    st.markdown("### 📝 La tua Lista della Spesa")
-    st.caption("Scrivi i prodotti che ti servono (uno per riga).")
+    st.markdown("### 🐞 Modalità Debugging")
+    st.info("Usa questo pannello per capire perché non trovi i prodotti.")
+
+    prod_test = st.text_input("Scrivi il prodotto che non trovi (es. UOVA)", value="UOVA").upper().strip()
     
-    col_in, col_opt = st.columns([1, 1])
-    with col_in:
-        # Input aumentato in altezza
-        lista_input = st.text_area("Lista prodotti:", height=200, placeholder="Latte\nUova\nTonno\nInsalata\nPane")
-    
-    with col_opt:
-        max_dist_km = st.slider("Distanza max (km)", 1, 50, 10)
-        st.write("") # Spaziatore
-        st.write("")
-        btn_calc = st.button("🚀 Calcola Convenienza", use_container_width=True)
-    
-    if btn_calc:
-        if not lista_input.strip():
-            st.warning("Inserisci almeno un prodotto.")
+    if st.button("🔍 AVVIA DIAGNOSI"):
+        
+        # 1. CARICAMENTO GREZZO
+        st.write("---")
+        st.markdown("**FASE 1: Lettura Google Sheets**")
+        data_s = ws_scontrini.get_all_records()
+        data_c = ws_catalogo.get_all_records()
+        df_s = pd.DataFrame(data_s)
+        df_c = pd.DataFrame(data_c)
+        
+        st.write(f"Righe Scontrini lette: **{len(df_s)}**")
+        st.write(f"Righe Catalogo lette: **{len(df_c)}**")
+
+        # 2. FILTRO SUL TESTO GREZZO (Prima del Join)
+        # Cerchiamo se la parola esiste nelle descrizioni grezze, per capire se almeno viene caricata
+        mask_raw = df_s.astype(str).apply(lambda x: x.str.contains(prod_test, case=False, na=False)).any(axis=1)
+        df_raw_found = df_s[mask_raw]
+        st.write(f"Righe nello scontrino che contengono '{prod_test}' (prima di ogni calcolo): **{len(df_raw_found)}**")
+        if not df_raw_found.empty:
+            st.dataframe(df_raw_found[['Descrizione_Grezza', 'ID_PRODOTTO', 'Negozio']])
         else:
-            items = [x.strip().upper() for x in lista_input.split('\n') if x.strip()]
+            st.error(f"❌ La parola '{prod_test}' non esiste nemmeno nelle descrizioni grezze! Controlla il foglio Google.")
+            st.stop()
+
+        # 3. ANALISI ID PRODOTTO
+        st.write("---")
+        st.markdown("**FASE 2: Analisi ID e Join**")
+        
+        # Pulizia ID aggressiva per il test
+        df_s['ID_PRODOTTO'] = df_s['ID_PRODOTTO'].astype(str).str.strip()
+        df_c['ID_PRODOTTO'] = df_c['ID_PRODOTTO'].astype(str).str.strip()
+        
+        # Prendiamo gli ID dei prodotti trovati prima
+        ids_problematici = df_raw_found['ID_PRODOTTO'].unique()
+        st.write(f"ID associati a '{prod_test}': {ids_problematici}")
+        
+        # Verifichiamo se questi ID esistono nel catalogo
+        for pid in ids_problematici:
+            match = df_c[df_c['ID_PRODOTTO'] == pid]
+            if match.empty:
+                st.error(f"❌ ID ORFANO: L'ID '{pid}' esiste nello scontrino ma NON nel catalogo. Il merge lo cancellerà.")
+            else:
+                st.success(f"✅ ID MATCH: L'ID '{pid}' esiste nel catalogo come: {match.iloc[0]['NOME_NORMALIZZATO']}")
+
+        # 4. SIMULAZIONE MERGE
+        df_full = pd.merge(df_s, df_c, on='ID_PRODOTTO', how='inner')
+        
+        # Cerchiamo di nuovo il prodotto nel dataframe unito
+        mask_final = (
+            df_full['NOME_NORMALIZZATO'].str.contains(prod_test, na=False) |
+            df_full['CATEGORIA'].str.contains(prod_test, na=False) |
+            df_full['Descrizione_Grezza'].str.contains(prod_test, na=False)
+        )
+        df_final_found = df_full[mask_final]
+        st.write(f"Righe sopravvissute al Join: **{len(df_final_found)}**")
+        
+        if df_final_found.empty:
+            st.warning("⚠️ Nessun prodotto trovato dopo il Join. Il problema è il collegamento ID Scontrino <-> ID Catalogo.")
+            st.stop()
+
+        # 5. CONTROLLO GEOLOCALIZZAZIONE
+        st.write("---")
+        st.markdown("**FASE 3: Filtro Distanza**")
+        
+        if not st.session_state.my_lat:
+            st.warning("Posizione GPS non impostata. La distanza è calcolata come 999 km.")
+            my_lat, my_lon = 0, 0
+        else:
+            my_lat, my_lon = st.session_state.my_lat, st.session_state.my_lon
+            st.write(f"Tua posizione: {my_lat}, {my_lon}")
+
+        # Calcolo distanze per i risultati trovati
+        for idx, row in df_final_found.iterrows():
+            addr_clean = re.sub(r'\W+', '', str(row['Indirizzo'])).upper()
+            neg = next((n for n in lista_negozi_raw if re.sub(r'\W+', '', str(n.get('Indirizzo_Standard (Pulito)', ''))).upper() == addr_clean), None)
             
-            with st.spinner(f"Analisi prezzi per {len(items)} articoli..."):
+            dist = 999
+            msg = "Indirizzo non trovato in anagrafica"
+            
+            if neg and neg.get('Latitudine'):
                 try:
-                    # 1. Carica DB
-                    data_scontrini = ws_scontrini.get_all_records()
-                    data_catalogo = ws_catalogo.get_all_records()
-                    
-                    if not data_scontrini or not data_catalogo:
-                        st.error("Database vuoto.")
-                        st.stop()
-
-                    df_s = pd.DataFrame(data_scontrini)
-                    df_c = pd.DataFrame(data_catalogo)
-                    
-                    # Merge e Pulizia
-                    df_s['ID_PRODOTTO'] = df_s['ID_PRODOTTO'].astype(str)
-                    df_c['ID_PRODOTTO'] = df_c['ID_PRODOTTO'].astype(str)
-                    df_full = pd.merge(df_s, df_c, on='ID_PRODOTTO', how='inner')
-                    df_full['Prezzo_Unitario'] = df_full['Prezzo_Unitario'].apply(clean_price)
-                    
-                    # 2. Calcola Distanze
-                    unique_shops = df_full[['Negozio', 'Indirizzo']].drop_duplicates()
-                    shop_distances = {}
-                    
-                    for _, row in unique_shops.iterrows():
-                        key = f"{row['Negozio']} - {row['Indirizzo']}"
-                        if st.session_state.my_lat:
-                            addr_clean = re.sub(r'\W+', '', str(row['Indirizzo'])).upper()
-                            neg = next((n for n in lista_negozi_raw if re.sub(r'\W+', '', str(n.get('Indirizzo_Standard (Pulito)', ''))).upper() == addr_clean), None)
-                            dist = 999
-                            if neg and neg.get('Latitudine'):
-                                try: dist = get_road_distance(st.session_state.my_lat, st.session_state.my_lon, float(str(neg['Latitudine']).replace(',','.')), float(str(neg['Longitudine']).replace(',','.')))
-                                except: dist = 888
-                            shop_distances[key] = dist if dist else 999
-                        else:
-                            shop_distances[key] = 0
-
-                    # 3. Algoritmo
-                    results_per_shop = {}
-                    best_prices_global = {} 
-                    valid_shops = [s for s, d in shop_distances.items() if d <= max_dist_km]
-                    
-                    for shop_key in valid_shops:
-                        results_per_shop[shop_key] = {'Totale': 0.0, 'Dettagli': {}, 'Found_Count': 0}
-
-                    for item in items:
-                        # Ricerca parziale
-                        mask = (
-                            df_full['NOME_NORMALIZZATO'].str.contains(item, na=False) |
-                            df_full['CATEGORIA'].str.contains(item, na=False)
-                        )
-                        df_item = df_full[mask].copy()
-                        
-                        if df_item.empty: continue 
-                            
-                        # Minimo Globale
-                        min_global = df_item['Prezzo_Unitario'].min()
-                        best_shop_global = df_item.loc[df_item['Prezzo_Unitario'].idxmin()]['Negozio']
-                        best_prices_global[item] = (min_global, best_shop_global)
-                        
-                        # Minimo per Negozio
-                        for shop_key in valid_shops:
-                            negozio, indirizzo = shop_key.split(' - ', 1)
-                            df_shop_item = df_item[(df_item['Negozio'] == negozio) & (df_item['Indirizzo'] == indirizzo)]
-                            
-                            if not df_shop_item.empty:
-                                min_price = df_shop_item['Prezzo_Unitario'].min()
-                                prod_name = df_shop_item.loc[df_shop_item['Prezzo_Unitario'].idxmin()]['NOME_NORMALIZZATO']
-                                
-                                results_per_shop[shop_key]['Totale'] += min_price
-                                results_per_shop[shop_key]['Found_Count'] += 1
-                                results_per_shop[shop_key]['Dettagli'][item] = (min_price, prod_name)
-                    
-                    # 4. Classifica
-                    summary = []
-                    for shop, data in results_per_shop.items():
-                        if data['Found_Count'] > 0:
-                            missing = len(items) - data['Found_Count']
-                            summary.append({
-                                'Negozio': shop,
-                                'Totale': data['Totale'],
-                                'Prodotti Trovati': f"{data['Found_Count']}/{len(items)}",
-                                'Distanza': shop_distances[shop],
-                                'Missing_Sort': missing
-                            })
-                    
-                    df_res = pd.DataFrame(summary)
-                    
-                    if not df_res.empty:
-                        df_res = df_res.sort_values(by=['Missing_Sort', 'Totale'])
-                        best_shop = df_res.iloc[0]
-                        
-                        # --- BOX VINCITORE ---
-                        st.success(f"🏆 VINCITORE: **{best_shop['Negozio']}**")
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("Totale Spesa", f"€ {best_shop['Totale']:.2f}")
-                        c2.metric("Prodotti", best_shop['Prodotti Trovati'])
-                        c3.metric("Distanza", f"{best_shop['Distanza']} km")
-                        
-                        # --- NUOVA LOGICA DETTAGLIO: TROVATI E MANCANTI ---
-                        with st.expander("📝 Dettaglio articoli (Trovati vs Mancanti)", expanded=True):
-                            dettagli_shop = results_per_shop[best_shop['Negozio']]['Dettagli']
-                            
-                            for item_richiesto in items:
-                                if item_richiesto in dettagli_shop:
-                                    # Articolo Trovato
-                                    prezzo, nome_db = dettagli_shop[item_richiesto]
-                                    st.markdown(f"✅ **{item_richiesto}**: € {prezzo:.2f} <span style='color:grey; font-size:0.8em'>({nome_db})</span>", unsafe_allow_html=True)
-                                else:
-                                    # Articolo Mancante
-                                    st.markdown(f"❌ **{item_richiesto}**: _Non disponibile in questo punto vendita_", unsafe_allow_html=True)
-
-                        # ... (codice precedente del Tab 3 invariato fino al Box Vincitore) ...
-                        
-                        # --- STRATEGIA MIX (Codice invariato) ---
-                        if len(best_prices_global) == len(items):
-                            tot_mix = sum([x[0] for x in best_prices_global.values()])
-                            saving = best_shop['Totale'] - tot_mix
-                            if saving > 0.50:
-                                st.info(f"⚡ Se giri più negozi spendi **€ {tot_mix:.2f}** (Risparmi € {saving:.2f})")
-
-                        # --- NUOVA CLASSIFICA ESPANDIBILE ---
-                        st.markdown("---")
-                        st.markdown("### 📊 Classifica completa (Clicca per dettagli)")
-                        
-                        # Iteriamo su ogni riga della classifica
-                        for index, row in df_res.iterrows():
-                            shop_name = row['Negozio']
-                            totale = row['Totale']
-                            trovati = row['Prodotti Trovati']
-                            distanza = row['Distanza']
-                            
-                            # Creiamo un titolo formattato per il box
-                            # Esempio: #1 | IPERFAMILA... | € 13.50 | Trovati: 4/5 | 2.5 km
-                            rank_icon = "🥇" if index == 0 else "🥈" if index == 1 else "🥉" if index == 2 else f"#{index+1}"
-                            label_expander = f"{rank_icon} **€ {totale:.2f}** | {trovati} art. | {distanza} km | {shop_name}"
-                            
-                            with st.expander(label_expander):
-                                # Qui riusiamo la stessa logica visuale del box vincitore
-                                dettagli_shop = results_per_shop[shop_name]['Dettagli']
-                                
-                                # Griglia per allineare meglio
-                                st.markdown(f"**Dettaglio Articoli:**")
-                                
-                                for item_richiesto in items:
-                                    if item_richiesto in dettagli_shop:
-                                        # Articolo Trovato (Verde)
-                                        prezzo, nome_db = dettagli_shop[item_richiesto]
-                                        st.markdown(f"✅ **{item_richiesto}**: € {prezzo:.2f} <span style='color:grey; font-size:0.8em'>({nome_db})</span>", unsafe_allow_html=True)
-                                    else:
-                                        # Articolo Mancante (Rosso)
-                                        st.markdown(f"❌ **{item_richiesto}**: _Non disponibile_", unsafe_allow_html=True)
-                                
-                                # Se mancano prodotti, mostriamo un avviso
-                                count_trovati = int(trovati.split('/')[0])
-                                count_totali = int(trovati.split('/')[1])
-                                if count_trovati < count_totali:
-                                    st.caption("⚠️ Il totale calcolato include solo i prodotti disponibili. Considera che dovrai comprare altrove quelli mancanti.")
-
-                    else:
-                        st.warning("Nessun negozio ha questi prodotti.")
-
-                except Exception as e:
-                    st.error(f"Errore: {e}")
+                    dist = get_road_distance(my_lat, my_lon, float(str(neg['Latitudine']).replace(',','.')), float(str(neg['Longitudine']).replace(',','.')))
+                    msg = f"{dist} km"
+                except: 
+                    msg = "Errore calcolo API"
+            
+            st.write(f"- Negozio: **{row['Negozio']}** | Distanza calcolata: **{msg}**")
+            
+            if dist > 50: # Simuliamo il filtro
+                 st.markdown(f"  🔴 **ESCLUSO**: Distanza troppo alta (> 50km)")
+            else:
+                 st.markdown(f"  🟢 **INCLUSO**: Distanza ok")
