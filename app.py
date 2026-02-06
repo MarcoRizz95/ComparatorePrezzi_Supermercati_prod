@@ -555,12 +555,24 @@ with tab_carrello:
                                 else:
                                     st.markdown(f"❌ **{item_richiesto}**: _Non disponibile_", unsafe_allow_html=True)
 
-                        # --- STRATEGIA MIX ---
+                        
+                        # --- STRATEGIA MIX (Migliorata con Dettagli) ---
+                        # Calcoliamo il mix solo se abbiamo trovato TUTTI i prodotti almeno da qualche parte
                         if len(best_prices_global) == len(items):
                             tot_mix = sum([x[0] for x in best_prices_global.values()])
                             saving = best_shop['Totale'] - tot_mix
+                            
+                            # Mostriamo solo se c'è un risparmio reale (es. > 50 cent)
                             if saving > 0.50:
-                                st.info(f"⚡ Se giri più negozi spendi **€ {tot_mix:.2f}** (Risparmi € {saving:.2f})")
+                                msg_mix = f"⚡ Se giri più negozi spendi **€ {tot_mix:.2f}** (Risparmi € {saving:.2f})"
+                                with st.expander(msg_mix):
+                                    st.markdown("Ecco dove ti conviene comprare ogni singolo articolo:")
+                                    for item, (price, shop) in best_prices_global.items():
+                                        # Evidenziamo se il negozio del mix è diverso dal vincitore principale
+                                        if shop != best_shop['Negozio']:
+                                            st.markdown(f"📍 **{item}**: € {price:.2f} da **{shop}**")
+                                        else:
+                                            st.markdown(f"🔹 **{item}**: € {price:.2f} (Qui da {shop})")
 
                         # --- CLASSIFICA COMPLETA ---
                         st.markdown("---")
