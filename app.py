@@ -79,7 +79,7 @@ if 'my_lon' not in st.session_state: st.session_state.my_lon = None
 # Chiave per resettare l'uploader dopo il salvataggio
 if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
 
-st.title("🛍️ Spesa Normalizzata & Geolocalizzata")
+st.title("🛍️ Spesa Normalizzata & Geolocalizzata - VERSIONE PROD.")
 
 tab_carica, tab_cerca, tab_carrello = st.tabs(["📷 CARICA", "🔍 CERCA PRODOTTO", "🛒 CARRELLO OTTIMIZZATO"])
 
