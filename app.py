@@ -385,22 +385,24 @@ with tab_cerca:
                 else: st.info("Database vuoto.")
             except Exception as e:
                 st.error(f"Errore ricerca: {e}")
-# --- TAB 3: CARRELLO OTTIMIZZATO (Versione Finale & Stabile) ---
+# --- TAB 3: CARRELLO OTTIMIZZATO (Fix Duplicate ID) ---
 with tab_carrello:
     
     # --- 1. SEZIONE GEOLOCALIZZAZIONE ---
     with st.expander("📍 Imposta la tua posizione (Fondamentale per i risultati)", expanded=not st.session_state.my_lat):
         c_gps, c_man = st.columns([1, 2])
         with c_gps:
-            if st.button("Usa GPS"):
+            # AGGIUNTO key="gps_tab3" per evitare l'errore DuplicateElementId
+            if st.button("Usa GPS", key="gps_tab3"):
                 loc = get_geolocation()
                 if loc:
                     st.session_state.my_lat = loc['coords']['latitude']
                     st.session_state.my_lon = loc['coords']['longitude']
                     st.rerun()
         with c_man:
-            addr_in = st.text_input("Oppure scrivi Città/Indirizzo")
-            if st.button("Cerca Indirizzo"):
+            addr_in = st.text_input("Oppure scrivi Città/Indirizzo", key="addr_input_tab3")
+            # AGGIUNTO key="addr_btn_tab3" per evitare l'errore
+            if st.button("Cerca Indirizzo", key="addr_btn_tab3"):
                 lat, lon = get_coords_from_address(addr_in)
                 if lat: st.session_state.my_lat, st.session_state.my_lon = lat, lon; st.rerun()
         
@@ -432,9 +434,9 @@ with tab_carrello:
         
         b1, b2 = st.columns(2)
         with b1:
-            btn_calc = st.button("🚀 Calcola", use_container_width=True)
+            btn_calc = st.button("🚀 Calcola", use_container_width=True, key="calc_tab3")
         with b2:
-            st.button("🗑️ Svuota", on_click=clear_list, use_container_width=True)
+            st.button("🗑️ Svuota", on_click=clear_list, use_container_width=True, key="clear_tab3")
     
     if btn_calc:
         if not lista_input.strip():
@@ -455,7 +457,10 @@ with tab_carrello:
                     df_s = pd.DataFrame(data_scontrini)
                     df_c = pd.DataFrame(data_catalogo)
                     
-                    # --- PULIZIA DATA TYPES E SPAZI (Il segreto del funzionamento!) ---
+                    # --- PULIZIA DATA TYPES E SPAZI ---
+                    df_s.columns = [c.strip() for c in df_s.columns] # Pulisce nomi colonne
+                    df_c.columns = [c.strip() for c in df_c.columns]
+                    
                     df_s['ID_PRODOTTO'] = df_s['ID_PRODOTTO'].astype(str).str.strip()
                     df_c['ID_PRODOTTO'] = df_c['ID_PRODOTTO'].astype(str).str.strip()
                     
@@ -528,7 +533,7 @@ with tab_carrello:
                     df_res = pd.DataFrame(summary)
                     
                     if not df_res.empty:
-                        # Ordinamento e RESET INDICE (Corregge il bug #2 prima di #1)
+                        # Ordinamento e RESET INDICE
                         df_res = df_res.sort_values(by=['Missing_Sort', 'Totale'])
                         df_res = df_res.reset_index(drop=True) 
                         
@@ -567,7 +572,6 @@ with tab_carrello:
                             trovati = row['Prodotti Trovati']
                             distanza = row['Distanza']
                             
-                            # Etichetta pulita #1, #2...
                             label_expander = f"#{index+1} | € {totale:.2f} | {trovati} art. | {distanza} km | {shop_name}"
                             
                             with st.expander(label_expander):
