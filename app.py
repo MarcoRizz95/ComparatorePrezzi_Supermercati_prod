@@ -518,23 +518,53 @@ with tab_carrello:
                                     # Articolo Mancante
                                     st.markdown(f"❌ **{item_richiesto}**: _Non disponibile in questo punto vendita_", unsafe_allow_html=True)
 
-                        # --- STRATEGIA MIX ---
+                        # ... (codice precedente del Tab 3 invariato fino al Box Vincitore) ...
+                        
+                        # --- STRATEGIA MIX (Codice invariato) ---
                         if len(best_prices_global) == len(items):
                             tot_mix = sum([x[0] for x in best_prices_global.values()])
                             saving = best_shop['Totale'] - tot_mix
                             if saving > 0.50:
                                 st.info(f"⚡ Se giri più negozi spendi **€ {tot_mix:.2f}** (Risparmi € {saving:.2f})")
 
-                        # --- CLASSIFICA ---
-                        st.markdown("### 📊 Classifica completa")
-                        st.dataframe(
-                            df_res[['Negozio', 'Totale', 'Prodotti Trovati', 'Distanza']],
-                            use_container_width=True, hide_index=True,
-                            column_config={
-                                "Totale": st.column_config.NumberColumn(format="%.2f €"),
-                                "Distanza": st.column_config.NumberColumn(format="%.1f km")
-                            }
-                        )
+                        # --- NUOVA CLASSIFICA ESPANDIBILE ---
+                        st.markdown("---")
+                        st.markdown("### 📊 Classifica completa (Clicca per dettagli)")
+                        
+                        # Iteriamo su ogni riga della classifica
+                        for index, row in df_res.iterrows():
+                            shop_name = row['Negozio']
+                            totale = row['Totale']
+                            trovati = row['Prodotti Trovati']
+                            distanza = row['Distanza']
+                            
+                            # Creiamo un titolo formattato per il box
+                            # Esempio: #1 | IPERFAMILA... | € 13.50 | Trovati: 4/5 | 2.5 km
+                            rank_icon = "🥇" if index == 0 else "🥈" if index == 1 else "🥉" if index == 2 else f"#{index+1}"
+                            label_expander = f"{rank_icon} **€ {totale:.2f}** | {trovati} art. | {distanza} km | {shop_name}"
+                            
+                            with st.expander(label_expander):
+                                # Qui riusiamo la stessa logica visuale del box vincitore
+                                dettagli_shop = results_per_shop[shop_name]['Dettagli']
+                                
+                                # Griglia per allineare meglio
+                                st.markdown(f"**Dettaglio Articoli:**")
+                                
+                                for item_richiesto in items:
+                                    if item_richiesto in dettagli_shop:
+                                        # Articolo Trovato (Verde)
+                                        prezzo, nome_db = dettagli_shop[item_richiesto]
+                                        st.markdown(f"✅ **{item_richiesto}**: € {prezzo:.2f} <span style='color:grey; font-size:0.8em'>({nome_db})</span>", unsafe_allow_html=True)
+                                    else:
+                                        # Articolo Mancante (Rosso)
+                                        st.markdown(f"❌ **{item_richiesto}**: _Non disponibile_", unsafe_allow_html=True)
+                                
+                                # Se mancano prodotti, mostriamo un avviso
+                                count_trovati = int(trovati.split('/')[0])
+                                count_totali = int(trovati.split('/')[1])
+                                if count_trovati < count_totali:
+                                    st.caption("⚠️ Il totale calcolato include solo i prodotti disponibili. Considera che dovrai comprare altrove quelli mancanti.")
+
                     else:
                         st.warning("Nessun negozio ha questi prodotti.")
 
