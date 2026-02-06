@@ -81,7 +81,7 @@ if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
 
 st.title("🛍️ Spesa Normalizzata & Geolocalizzata")
 
-tab_carica, tab_cerca = st.tabs(["📷 CARICA & NORMALIZZA", "🔍 CONFRONTA PREZZI"])
+tab_carica, tab_cerca, tab_carrello = st.tabs(["📷 CARICA", "🔍 CERCA PRODOTTO", "🛒 CARRELLO OTTIMIZZATO"])
 
 # --- TAB 1: CARICAMENTO ---
 with tab_carica:
@@ -385,3 +385,171 @@ with tab_cerca:
                 else: st.info("Database vuoto.")
             except Exception as e:
                 st.error(f"Errore ricerca: {e}")
+    # --- TAB 3: CARRELLO OTTIMIZZATO (Nuova Funzionalità) ---
+with tab_carrello:
+    st.markdown("### 📝 La tua Lista della Spesa")
+    st.caption("Scrivi i prodotti che ti servono (uno per riga) per scoprire dove ti conviene andare.")
+    
+    # Input Area
+    lista_input = st.text_area("Inserisci prodotti:", height=150, placeholder="Latte\nUova\nTonno Rio Mare\nBiscotti Gocciole")
+    
+    col_dist, col_calc = st.columns([1, 2])
+    with col_dist:
+        max_dist_km = st.slider("Distanza max (km)", 1, 50, 10)
+    
+    if st.button("calcola convenienza 🚀"):
+        if not lista_input.strip():
+            st.warning("Inserisci almeno un prodotto.")
+        else:
+            items = [x.strip().upper() for x in lista_input.split('\n') if x.strip()]
+            
+            with st.spinner(f"Ottimizzazione spesa per {len(items)} articoli..."):
+                try:
+                    # 1. Carica DB Completo
+                    data_scontrini = ws_scontrini.get_all_records()
+                    data_catalogo = ws_catalogo.get_all_records()
+                    
+                    if not data_scontrini or not data_catalogo:
+                        st.error("Database vuoto.")
+                        st.stop()
+
+                    df_s = pd.DataFrame(data_scontrini)
+                    df_c = pd.DataFrame(data_catalogo)
+                    
+                    # Merge
+                    df_s['ID_PRODOTTO'] = df_s['ID_PRODOTTO'].astype(str)
+                    df_c['ID_PRODOTTO'] = df_c['ID_PRODOTTO'].astype(str)
+                    df_full = pd.merge(df_s, df_c, on='ID_PRODOTTO', how='inner')
+                    
+                    # Pulizia Prezzi
+                    df_full['Prezzo_Unitario'] = df_full['Prezzo_Unitario'].apply(clean_price)
+                    
+                    # 2. Calcola Distanze una volta sola per negozio
+                    # Creiamo un dizionario {Nome_Negozio: Distanza} per non ricalcolare sempre
+                    unique_shops = df_full[['Negozio', 'Indirizzo']].drop_duplicates()
+                    shop_distances = {}
+                    
+                    for _, row in unique_shops.iterrows():
+                        key = f"{row['Negozio']} - {row['Indirizzo']}"
+                        if st.session_state.my_lat:
+                            # Logica distanza esistente
+                            addr_clean = re.sub(r'\W+', '', str(row['Indirizzo'])).upper()
+                            neg = next((n for n in lista_negozi_raw if re.sub(r'\W+', '', str(n.get('Indirizzo_Standard (Pulito)', ''))).upper() == addr_clean), None)
+                            dist = 999
+                            if neg and neg.get('Latitudine'):
+                                try: dist = get_road_distance(st.session_state.my_lat, st.session_state.my_lon, float(str(neg['Latitudine']).replace(',','.')), float(str(neg['Longitudine']).replace(',','.')))
+                                except: dist = 888
+                            shop_distances[key] = dist if dist else 999
+                        else:
+                            shop_distances[key] = 0 # Se non ho GPS, ignoro distanza
+
+                    # 3. Algoritmo di Ricerca Prezzi
+                    # Struttura risultati: { Negozio: { 'Totale': 0, 'Trovati': [], 'Mancanti': [] } }
+                    results_per_shop = {}
+                    best_prices_global = {} # Per la strategia "Mix"
+                    
+                    # Inizializza i negozi nel range
+                    valid_shops = [s for s, d in shop_distances.items() if d <= max_dist_km]
+                    
+                    for shop_key in valid_shops:
+                        results_per_shop[shop_key] = {'Totale': 0.0, 'Dettagli': {}, 'Found_Count': 0}
+
+                    # Ciclo sui prodotti cercati
+                    for item in items:
+                        # Filtra DB per questo item
+                        mask = (
+                            df_full['NOME_NORMALIZZATO'].str.contains(item, na=False) |
+                            df_full['CATEGORIA'].str.contains(item, na=False)
+                        )
+                        df_item = df_full[mask].copy()
+                        
+                        if df_item.empty:
+                            continue # Prodotto non esiste nel DB
+                            
+                        # Trova prezzo minimo globale per questo item (per strategia Mix)
+                        min_global = df_item['Prezzo_Unitario'].min()
+                        best_shop_global = df_item.loc[df_item['Prezzo_Unitario'].idxmin()]['Negozio']
+                        best_prices_global[item] = (min_global, best_shop_global)
+                        
+                        # Trova prezzo minimo PER NEGOZIO
+                        for shop_key in valid_shops:
+                            # shop_key è "Nome - Indirizzo"
+                            negozio, indirizzo = shop_key.split(' - ', 1)
+                            
+                            # Filtra per negozio specifico
+                            df_shop_item = df_item[
+                                (df_item['Negozio'] == negozio) & 
+                                (df_item['Indirizzo'] == indirizzo)
+                            ]
+                            
+                            if not df_shop_item.empty:
+                                # Prendi il prezzo più basso registrato in questo negozio per questo articolo
+                                min_price = df_shop_item['Prezzo_Unitario'].min()
+                                prod_name = df_shop_item.loc[df_shop_item['Prezzo_Unitario'].idxmin()]['NOME_NORMALIZZATO']
+                                
+                                results_per_shop[shop_key]['Totale'] += min_price
+                                results_per_shop[shop_key]['Found_Count'] += 1
+                                results_per_shop[shop_key]['Dettagli'][item] = (min_price, prod_name)
+                    
+                    # 4. Analisi Risultati
+                    summary = []
+                    for shop, data in results_per_shop.items():
+                        if data['Found_Count'] > 0: # Mostra solo se ha almeno 1 prodotto
+                            missing = len(items) - data['Found_Count']
+                            summary.append({
+                                'Negozio': shop,
+                                'Totale': data['Totale'],
+                                'Prodotti Trovati': f"{data['Found_Count']}/{len(items)}",
+                                'Distanza': shop_distances[shop],
+                                'Missing_Sort': missing # Per ordinamento
+                            })
+                    
+                    # Creazione DataFrame Comparativo
+                    df_res = pd.DataFrame(summary)
+                    
+                    if not df_res.empty:
+                        # Ordina per: Più prodotti trovati > Prezzo più basso
+                        df_res = df_res.sort_values(by=['Missing_Sort', 'Totale'])
+                        
+                        # --- OUTPUT 1: MIGLIOR SUPERMERCATO SINGOLO ---
+                        best_shop = df_res.iloc[0]
+                        st.success(f"🏆 VINCITORE: **{best_shop['Negozio']}**")
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("Totale Spesa", f"€ {best_shop['Totale']:.2f}")
+                        c2.metric("Prodotti", best_shop['Prodotti Trovati'])
+                        c3.metric("Distanza", f"{best_shop['Distanza']} km")
+                        
+                        with st.expander("Dettaglio prezzi nel negozio vincente"):
+                            dettagli = results_per_shop[best_shop['Negozio']]['Dettagli']
+                            for k, v in dettagli.items():
+                                st.write(f"- {k}: **€ {v[0]:.2f}** ({v[1]})")
+                        
+                        # --- OUTPUT 2: STRATEGIA MIX (HYBRID) ---
+                        if len(best_prices_global) == len(items):
+                            tot_mix = sum([x[0] for x in best_prices_global.values()])
+                            saving = best_shop['Totale'] - tot_mix
+                            
+                            if saving > 0.50: # Mostra solo se il risparmio vale la pena
+                                st.info(f"⚡ STRATEGIA MIX: Se giri più negozi spendi **€ {tot_mix:.2f}** (Risparmi € {saving:.2f})")
+                                with st.expander("Vedi dove comprare cosa"):
+                                    for item, (price, shop) in best_prices_global.items():
+                                        st.write(f"- {item}: **€ {price:.2f}** da {shop}")
+                        
+                        # --- TABELLA COMPLETA ---
+                        st.markdown("---")
+                        st.markdown("##### Classifica completa")
+                        st.dataframe(
+                            df_res[['Negozio', 'Totale', 'Prodotti Trovati', 'Distanza']],
+                            use_container_width=True,
+                            hide_index=True,
+                             column_config={
+                                "Totale": st.column_config.NumberColumn(format="%.2f €"),
+                                "Distanza": st.column_config.NumberColumn(format="%.1f km")
+                            }
+                        )
+                        
+                    else:
+                        st.warning("Nessun negozio trovato con questi prodotti nel raggio selezionato.")
+
+                except Exception as e:
+                    st.error(f"Errore calcolo carrello: {e}")
