@@ -172,7 +172,21 @@ with tab_carica:
                     """
                     response = model.generate_content([prompt, *imgs])
                     text_resp = response.text.strip().replace('```json', '').replace('```', '')
-                    st.session_state.dati_analizzati = json.loads(text_resp)
+                    if 'vdb' in st.session_state and hasattr(st.session_state.vdb, 'search_product'):
+                        prodotti_list = data_json.get('prodotti', [])
+                        for p in prodotti_list:
+                            raw_name = p.get('nome_grezzo', '')
+                            # Chiediamo al DB se conosce questo prodotto
+                            res_db = st.session_state.vdb.search_product(raw_name)
+                            
+                            if res_db['found']:
+                                # Trovato! Sovrascriviamo le ipotesi di Gemini con la certezza storica
+                                p['nome_normalizzato'] = res_db['normalized_name']
+                                p['categoria'] = res_db['category']
+                                # Aggiungiamo un flag per mostrare all'utente che viene dal DB (opzionale)
+                                p['from_db'] = True 
+                    
+                    st.session_state.dati_analizzati = data_json
                     st.rerun()
                 except Exception as e: st.error(f"Errore IA: {e}")
 
