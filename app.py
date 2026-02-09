@@ -71,6 +71,8 @@ try:
     
     lista_negozi_raw = ws_negozi.get_all_records()
     model = genai.GenerativeModel('models/gemini-2.5-flash')
+    
+    # --- NUOVO CODICE: CONNESSIONE PINECONE ---
     if 'vdb' not in st.session_state:
         try:
             # Usa .get per evitare errori se la chiave non è ancora nei secrets
@@ -79,7 +81,8 @@ try:
                 st.session_state.vdb = VectorDB(api_key=pc_key)
                 print("Pinecone connesso con successo")
             else:
-                st.warning("Chiave Pinecone non trovata nei Secrets.")
+                # Silenzioso per non disturbare se non configurato
+                pass
         except Exception as e:
             st.error(f"Errore connessione VectorDB: {e}")
 
@@ -172,6 +175,11 @@ with tab_carica:
                     """
                     response = model.generate_content([prompt, *imgs])
                     text_resp = response.text.strip().replace('```json', '').replace('```', '')
+                    
+                    # Carico il JSON
+                    data_json = json.loads(text_resp)
+                    
+                    # --- INTEGRAZIONE PINECONE: RICERCA E SOSTITUZIONE ---
                     if 'vdb' in st.session_state and hasattr(st.session_state.vdb, 'search_product'):
                         prodotti_list = data_json.get('prodotti', [])
                         for p in prodotti_list:
@@ -257,24 +265,23 @@ with tab_carica:
                     except: fmt = 1.0
                     fmt = sanitize_value(fmt)
 
-        # --- INIZIO CODICE DA INSERIRE ---
-        # Salviamo l'associazione: "Testo Scontrino" -> "Nome Normalizzato & Categoria"
-        scontrino_raw_text = str(row["Scontrino"])
-        
-        # Verifichiamo che il DB sia connesso e che ci siano i dati minimi
-        if 'vdb' in st.session_state and norm_name and cat:
-            try:
-                st.session_state.vdb.add_product(
-                    raw_name=scontrino_raw_text,
-                    normalized_name=norm_name,
-                    category=cat
-                )
-            except Exception as e_pinecone:
-                print(f"Warning Pinecone: {e_pinecone}")
-        # --- FINE CODICE DA INSERIRE ---
-                  
+                    # --- INTEGRAZIONE PINECONE: UPSERT (APPRENDIMENTO) ---
+                    # Salviamo l'associazione: "Testo Scontrino" -> "Nome Normalizzato & Categoria"
+                    scontrino_raw_text = str(row["Scontrino"])
+                    
+                    if 'vdb' in st.session_state and norm_name and cat:
+                        try:
+                            st.session_state.vdb.add_product(
+                                raw_name=scontrino_raw_text,
+                                normalized_name=norm_name,
+                                category=cat
+                            )
+                        except Exception as e_pinecone:
+                            print(f"Warning Pinecone: {e_pinecone}")
+                    # -----------------------------------------------------
+
                     # LOGICA ID (Relazionale)
-        prod_id = None
+                    prod_id = None
                     # A. Cerca nel DB
                     if not df_cat.empty and 'NOME_NORMALIZZATO' in df_cat.columns:
                         match_prod = df_cat[df_cat['NOME_NORMALIZZATO'] == norm_name]
