@@ -13,6 +13,7 @@ import time
 import itertools
 from streamlit_js_eval import get_geolocation
 from geopy.geocoders import Nominatim
+from vector_db import VectorDB
 
 # --- 1. FUNZIONI DI SERVIZIO ---
 
