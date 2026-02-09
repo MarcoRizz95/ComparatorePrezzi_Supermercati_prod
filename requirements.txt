@@ -5,3 +5,6 @@ Pillow
 geopy
 streamlit-js-eval
 requests
+pinecone-client
+sentence-transformers
+torch --index-url https://download.pytorch.org/whl/cpu
