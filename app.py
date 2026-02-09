@@ -256,7 +256,23 @@ with tab_carica:
                     try: fmt = float(str(row["Peso/Vol (Tot)"]).replace(',', '.'))
                     except: fmt = 1.0
                     fmt = sanitize_value(fmt)
-                    
+
+        # --- INIZIO CODICE DA INSERIRE ---
+        # Salviamo l'associazione: "Testo Scontrino" -> "Nome Normalizzato & Categoria"
+        scontrino_raw_text = str(row["Scontrino"])
+        
+        # Verifichiamo che il DB sia connesso e che ci siano i dati minimi
+        if 'vdb' in st.session_state and norm_name and cat:
+            try:
+                st.session_state.vdb.add_product(
+                    raw_name=scontrino_raw_text,
+                    normalized_name=norm_name,
+                    category=cat
+                )
+            except Exception as e_pinecone:
+                print(f"Warning Pinecone: {e_pinecone}")
+        # --- FINE CODICE DA INSERIRE ---
+                  
                     # LOGICA ID (Relazionale)
                     prod_id = None
                     # A. Cerca nel DB
