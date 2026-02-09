@@ -274,7 +274,7 @@ with tab_carica:
         # --- FINE CODICE DA INSERIRE ---
                   
                     # LOGICA ID (Relazionale)
-                    prod_id = None
+        prod_id = None
                     # A. Cerca nel DB
                     if not df_cat.empty and 'NOME_NORMALIZZATO' in df_cat.columns:
                         match_prod = df_cat[df_cat['NOME_NORMALIZZATO'] == norm_name]
