@@ -71,6 +71,18 @@ try:
     
     lista_negozi_raw = ws_negozi.get_all_records()
     model = genai.GenerativeModel('models/gemini-2.5-flash')
+    if 'vdb' not in st.session_state:
+        try:
+            # Usa .get per evitare errori se la chiave non è ancora nei secrets
+            pc_key = st.secrets.get("PINECONE_API_KEY")
+            if pc_key:
+                st.session_state.vdb = VectorDB(api_key=pc_key)
+                print("Pinecone connesso con successo")
+            else:
+                st.warning("Chiave Pinecone non trovata nei Secrets.")
+        except Exception as e:
+            st.error(f"Errore connessione VectorDB: {e}")
+
 except Exception as e:
     st.error(f"Errore connessione: {e}")
     st.stop()
