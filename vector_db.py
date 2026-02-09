@@ -1,7 +1,7 @@
 import streamlit as st
 from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
-import time
+import uuid  # <--- IMPORTANTE: Abbiamo aggiunto questa libreria
 
 class VectorDB:
     def __init__(self, api_key, index_name="scontrini-db"):
@@ -60,8 +60,13 @@ class VectorDB:
         """Salva un nuovo prodotto nel database per il futuro"""
         vector = self.get_embedding(raw_name)
         
-        # Creiamo un ID unico basato sul tempo o sul nome (semplificato qui)
-        unique_id = f"{int(time.time())}_{raw_name[:10].strip()}"
+        # --- MODIFICA FIX ID UNIVOCO ---
+        # Usiamo un UUID casuale per evitare sovrascritture su nomi simili
+        # Es: 'MIGROSS PA_a1b2c3d4'
+        unique_suffix = str(uuid.uuid4())[:8]
+        clean_prefix = raw_name[:15].strip().replace(" ", "_")
+        unique_id = f"{clean_prefix}_{unique_suffix}"
+        # -------------------------------
         
         # Upsert su Pinecone
         self.index.upsert(
