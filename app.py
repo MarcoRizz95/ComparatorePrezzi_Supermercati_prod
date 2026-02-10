@@ -370,8 +370,8 @@ with tab_cerca:
     st.markdown("---")
     query = st.text_input("🔍 Cerca Prodotto (es. Latte, Tonno, Granarolo)", key="search_norm").upper().strip()
     
-    if query:
-        with st.spinner("Ricerca nel database normalizzato..."):
+if query:
+        with st.spinner("Ricerca semantica in corso..."): # Cambio testo per scena
             try:
                 data_scontrini = ws_scontrini.get_all_records()
                 data_catalogo = ws_catalogo.get_all_records()
@@ -380,17 +380,28 @@ with tab_cerca:
                     df_s = pd.DataFrame(data_scontrini)
                     df_c = pd.DataFrame(data_catalogo)
                     
-                    # Join Relazionale
+                    # Join Relazionale (Standard)
                     df_s['ID_PRODOTTO'] = df_s['ID_PRODOTTO'].astype(str)
                     df_c['ID_PRODOTTO'] = df_c['ID_PRODOTTO'].astype(str)
                     df_full = pd.merge(df_s, df_c, on='ID_PRODOTTO', how='inner')
                     
-                    # Filtro
+                    # --- NUOVA LOGICA: RICERCA IBRIDA (Vettoriale + Testuale) ---
+                    
+                    # 1. Chiediamo a Pinecone i concetti simili
+                    nomi_da_pinecone = []
+                    if 'vdb' in st.session_state:
+                         nomi_da_pinecone = st.session_state.vdb.search_similar_products(query, top_k=15)
+                    
+                    # 2. Creiamo il filtro
+                    # Teniamo i prodotti se:
+                    # A) Il loro nome normalizzato è tra quelli suggeriti da Pinecone (SEMANTICO)
+                    # B) OPPURE contengono comunque la parola cercata (TESTUALE - Fallback di sicurezza)
+                    
                     mask = (
-                        df_full['NOME_NORMALIZZATO'].str.contains(query, na=False) |
-                        df_full['BRAND'].str.contains(query, na=False) |
-                        df_full['CATEGORIA'].str.contains(query, na=False)
+                        df_full['NOME_NORMALIZZATO'].isin(nomi_da_pinecone) | 
+                        df_full['NOME_NORMALIZZATO'].str.contains(query, case=False, na=False)
                     )
+                    
                     res = df_full[mask].copy()
                     
                     if not res.empty:
