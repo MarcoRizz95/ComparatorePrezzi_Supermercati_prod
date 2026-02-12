@@ -742,3 +742,110 @@ with tab_carrello:
 
                 except Exception as e:
                     st.error(f"Errore tecnico: {e}")
+
+
+        # --- SEZIONE MANUTENZIONE (Sidebar) ---
+with st.sidebar:
+    st.divider()
+    st.header("🛠️ Manutenzione DB")
+    
+    # Bottone per sincronizzazione massiva incrementale
+    if st.button("🔄 Sincronizza Scontrini mancanti"):
+        if 'vdb' not in st.session_state:
+            st.error("Database vettoriale non connesso.")
+        else:
+            try:
+                with st.spinner("Lettura dati da Google Sheets..."):
+                    # 1. Carichiamo i dati necessari
+                    # Scontrini: ci serve il testo originale (Col D) e l'ID Prodotto (Col K) e lo stato Sync (Col M)
+                    all_scontrini = ws_scontrini.get_all_values() # Legge tutto come lista di liste
+                    
+                    # Catalogo: ci serve per decodificare l'ID Prodotto in Nome e Categoria
+                    all_catalogo = ws_catalogo.get_all_records()
+                    df_cat = pd.DataFrame(all_catalogo)
+                    
+                    # Creiamo una mappa veloce ID -> {Nome, Categoria}
+                    # Assicuriamoci che le colonne siano stringhe per evitare errori di match
+                    df_cat['ID_PRODOTTO'] = df_cat['ID_PRODOTTO'].astype(str)
+                    catalog_map = df_cat.set_index('ID_PRODOTTO')[['NOME_NORMALIZZATO', 'CATEGORIA']].to_dict('index')
+
+                # 2. Iteriamo sugli scontrini per trovare quelli NON sincronizzati
+                # La struttura di all_scontrini è una lista di liste.
+                # Indici (basati su 0): 
+                # Col D (Testo Scontrino) = 3
+                # Col K (ID Prodotto) = 10
+                # Col M (SYNC_PINECONE) = 12 (se esiste, altrimenti è fuori range)
+                
+                header = all_scontrini[0]
+                data_rows = all_scontrini[1:]
+                
+                rows_to_sync = []
+                row_indices_to_update = [] # Teniamo traccia del numero di riga (Excel style) per aggiornare "OK"
+                
+                st.write(f"Analisi di {len(data_rows)} righe storiche...")
+                
+                progress_bar = st.progress(0)
+                
+                for i, row in enumerate(data_rows):
+                    # Excel row index = i + 2 (perché c'è l'header e l'indice parte da 0)
+                    excel_row_index = i + 2
+                    
+                    # Controllo se la colonna M esiste ed è piena
+                    is_synced = False
+                    if len(row) > 12: # Se la riga è abbastanza lunga
+                        if row[12].strip().upper() == "OK":
+                            is_synced = True
+                    
+                    if not is_synced:
+                        # Recuperiamo i dati
+                        raw_text = row[3]
+                        prod_id = str(row[10])
+                        
+                        # Se abbiamo ID e Testo, cerchiamo nel catalogo
+                        if raw_text and prod_id in catalog_map:
+                            info = catalog_map[prod_id]
+                            norm_name = info['NOME_NORMALIZZATO']
+                            cat = info['CATEGORIA']
+                            
+                            # Aggiungiamo alla lista di cose da fare
+                            rows_to_sync.append({
+                                "raw": raw_text,
+                                "norm": norm_name,
+                                "cat": cat,
+                                "row_idx": excel_row_index
+                            })
+                
+                # 3. Esecuzione (Batch size per sicurezza)
+                if not rows_to_sync:
+                    st.success("Tutto aggiornato! Nessuna nuova riga da sincronizzare.")
+                else:
+                    st.info(f"Trovate {len(rows_to_sync)} righe da sincronizzare su Pinecone.")
+                    
+                    # Processiamo
+                    counter = 0
+                    for item in rows_to_sync:
+                        # Upsert su Pinecone
+                        st.session_state.vdb.add_product(
+                            raw_name=item["raw"],
+                            normalized_name=item["norm"],
+                            category=item["cat"]
+                        )
+                        
+                        # Aggiorniamo la cella su Google Sheets (Scriviamo "OK" nella colonna M)
+                        # Nota: Scrivere cella per cella è lento, ma sicuro.
+                        ws_scontrini.update_cell(item["row_idx"], 13, "OK")
+                        
+                        counter += 1
+                        progress_bar.progress(counter / len(rows_to_sync))
+                        
+                        # Piccola pausa per non intasare le API Google
+                        if counter % 10 == 0:
+                            time.sleep(1)
+
+                    st.success(f"✅ Sincronizzazione completata! {counter} vettori aggiunti.")
+                    st.session_state.uploader_key += 1 # Force reload
+                    time.sleep(2)
+                    st.rerun()
+
+            except Exception as e:
+                st.error(f"Errore durante la sync: {e}")
