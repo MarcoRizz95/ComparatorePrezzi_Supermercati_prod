@@ -5,7 +5,7 @@ import os
 import json
 
 def run_cleanup():
-    try:
+    tr:
         print("Inizio procedura di pulizia...")
         # Recupero credenziali
         info = json.loads(os.environ['GOOGLE_SHEETS_JSON'])
@@ -48,4 +48,4 @@ def run_cleanup():
         raise e
 
 if __name__ == "__main__":
-    run_cleanup()
+    run_cleanup(
