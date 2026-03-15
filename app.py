@@ -744,7 +744,7 @@ with tab_carrello:
                     st.error(f"Errore tecnico: {e}")
 
 
-        # --- SEZIONE MANUTENZIONE (Sidebar) ---
+       # --- SEZIONE MANUTENZIONE (Sidebar) ---
 with st.sidebar:
     st.divider()
     st.header("🛠️ Manutenzione DB")
@@ -757,71 +757,67 @@ with st.sidebar:
             try:
                 with st.spinner("Lettura dati da Google Sheets..."):
                     # 1. Carichiamo i dati necessari
-                    # Scontrini: ci serve il testo originale (Col D) e l'ID Prodotto (Col K) e lo stato Sync (Col M)
-                    all_scontrini = ws_scontrini.get_all_values() # Legge tutto come lista di liste
-                    
-                    # Catalogo: ci serve per decodificare l'ID Prodotto in Nome e Categoria
+                    all_scontrini = ws_scontrini.get_all_values() 
                     all_catalogo = ws_catalogo.get_all_records()
+                    
                     df_cat = pd.DataFrame(all_catalogo)
                     
-                    # Creiamo una mappa veloce ID -> {Nome, Categoria}
-                    # Assicuriamoci che le colonne siano stringhe per evitare errori di match
-                    df_cat['ID_PRODOTTO'] = df_cat['ID_PRODOTTO'].astype(str)
+                    # --- FIX ERRORE DUPLICATI ---
+                    # Se ci sono ID duplicati nel catalogo, teniamo solo il primo e buttiamo gli altri
+                    if not df_cat.empty and 'ID_PRODOTTO' in df_cat.columns:
+                        df_cat['ID_PRODOTTO'] = df_cat['ID_PRODOTTO'].astype(str)
+                        df_cat = df_cat.drop_duplicates(subset=['ID_PRODOTTO'], keep='first')
+                    # ----------------------------
+
+                    # Creiamo la mappa ID -> {Nome, Categoria}
                     catalog_map = df_cat.set_index('ID_PRODOTTO')[['NOME_NORMALIZZATO', 'CATEGORIA']].to_dict('index')
 
                 # 2. Iteriamo sugli scontrini per trovare quelli NON sincronizzati
-                # La struttura di all_scontrini è una lista di liste.
-                # Indici (basati su 0): 
-                # Col D (Testo Scontrino) = 3
-                # Col K (ID Prodotto) = 10
-                # Col M (SYNC_PINECONE) = 12 (se esiste, altrimenti è fuori range)
+                # Indici (basati su 0): Col D (Testo) = 3, Col K (ID) = 10, Col M (SYNC) = 12
                 
+                if len(all_scontrini) < 2:
+                    st.warning("Nessuno scontrino trovato.")
+                    st.stop()
+
                 header = all_scontrini[0]
                 data_rows = all_scontrini[1:]
                 
                 rows_to_sync = []
-                row_indices_to_update = [] # Teniamo traccia del numero di riga (Excel style) per aggiornare "OK"
                 
                 st.write(f"Analisi di {len(data_rows)} righe storiche...")
-                
                 progress_bar = st.progress(0)
                 
+                # Lista per aggiornamento massivo su Google Sheets (più veloce)
+                updates_cells = [] 
+
                 for i, row in enumerate(data_rows):
-                    # Excel row index = i + 2 (perché c'è l'header e l'indice parte da 0)
                     excel_row_index = i + 2
                     
-                    # Controllo se la colonna M esiste ed è piena
+                    # Controllo se sincronizzato
                     is_synced = False
-                    if len(row) > 12: # Se la riga è abbastanza lunga
-                        if row[12].strip().upper() == "OK":
-                            is_synced = True
+                    if len(row) > 12 and row[12].strip().upper() == "OK":
+                        is_synced = True
                     
                     if not is_synced:
-                        # Recuperiamo i dati
-                        raw_text = row[3]
-                        prod_id = str(row[10])
+                        # Recuperiamo i dati in modo sicuro (gestendo righe vuote o corte)
+                        raw_text = row[3] if len(row) > 3 else ""
+                        prod_id = str(row[10]) if len(row) > 10 else ""
                         
-                        # Se abbiamo ID e Testo, cerchiamo nel catalogo
                         if raw_text and prod_id in catalog_map:
                             info = catalog_map[prod_id]
-                            norm_name = info['NOME_NORMALIZZATO']
-                            cat = info['CATEGORIA']
-                            
-                            # Aggiungiamo alla lista di cose da fare
                             rows_to_sync.append({
                                 "raw": raw_text,
-                                "norm": norm_name,
-                                "cat": cat,
+                                "norm": info['NOME_NORMALIZZATO'],
+                                "cat": info['CATEGORIA'],
                                 "row_idx": excel_row_index
                             })
                 
-                # 3. Esecuzione (Batch size per sicurezza)
+                # 3. Esecuzione
                 if not rows_to_sync:
                     st.success("Tutto aggiornato! Nessuna nuova riga da sincronizzare.")
                 else:
                     st.info(f"Trovate {len(rows_to_sync)} righe da sincronizzare su Pinecone.")
                     
-                    # Processiamo
                     counter = 0
                     for item in rows_to_sync:
                         # Upsert su Pinecone
@@ -831,19 +827,17 @@ with st.sidebar:
                             category=item["cat"]
                         )
                         
-                        # Aggiorniamo la cella su Google Sheets (Scriviamo "OK" nella colonna M)
-                        # Nota: Scrivere cella per cella è lento, ma sicuro.
+                        # Aggiorniamo la cella locale (per non riprocessarla al prossimo click immediato)
                         ws_scontrini.update_cell(item["row_idx"], 13, "OK")
                         
                         counter += 1
                         progress_bar.progress(counter / len(rows_to_sync))
                         
-                        # Piccola pausa per non intasare le API Google
-                        if counter % 10 == 0:
+                        # Pausa tattica anti-ban Google
+                        if counter % 20 == 0:
                             time.sleep(1)
 
                     st.success(f"✅ Sincronizzazione completata! {counter} vettori aggiunti.")
-                    st.session_state.uploader_key += 1 # Force reload
                     time.sleep(2)
                     st.rerun()
 
