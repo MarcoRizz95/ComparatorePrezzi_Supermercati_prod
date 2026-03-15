@@ -744,62 +744,45 @@ with tab_carrello:
                     st.error(f"Errore tecnico: {e}")
 
 
-       # --- SEZIONE MANUTENZIONE (Sidebar) ---
+# --- SEZIONE MANUTENZIONE (Sidebar) ---
 with st.sidebar:
     st.divider()
     st.header("🛠️ Manutenzione DB")
     
-    # Bottone per sincronizzazione massiva incrementale
     if st.button("🔄 Sincronizza Scontrini mancanti"):
         if 'vdb' not in st.session_state:
             st.error("Database vettoriale non connesso.")
         else:
             try:
                 with st.spinner("Lettura dati da Google Sheets..."):
-                    # 1. Carichiamo i dati necessari
                     all_scontrini = ws_scontrini.get_all_values() 
                     all_catalogo = ws_catalogo.get_all_records()
                     
                     df_cat = pd.DataFrame(all_catalogo)
                     
-                    # --- FIX ERRORE DUPLICATI ---
-                    # Se ci sono ID duplicati nel catalogo, teniamo solo il primo e buttiamo gli altri
                     if not df_cat.empty and 'ID_PRODOTTO' in df_cat.columns:
                         df_cat['ID_PRODOTTO'] = df_cat['ID_PRODOTTO'].astype(str)
                         df_cat = df_cat.drop_duplicates(subset=['ID_PRODOTTO'], keep='first')
-                    # ----------------------------
 
-                    # Creiamo la mappa ID -> {Nome, Categoria}
                     catalog_map = df_cat.set_index('ID_PRODOTTO')[['NOME_NORMALIZZATO', 'CATEGORIA']].to_dict('index')
 
-                # 2. Iteriamo sugli scontrini per trovare quelli NON sincronizzati
-                # Indici (basati su 0): Col D (Testo) = 3, Col K (ID) = 10, Col M (SYNC) = 12
-                
                 if len(all_scontrini) < 2:
                     st.warning("Nessuno scontrino trovato.")
                     st.stop()
 
-                header = all_scontrini[0]
                 data_rows = all_scontrini[1:]
-                
-                rows_to_sync = []
+                rows_to_sync =[]
                 
                 st.write(f"Analisi di {len(data_rows)} righe storiche...")
                 progress_bar = st.progress(0)
-                
-                # Lista per aggiornamento massivo su Google Sheets (più veloce)
-                updates_cells = [] 
 
                 for i, row in enumerate(data_rows):
                     excel_row_index = i + 2
-                    
-                    # Controllo se sincronizzato
                     is_synced = False
                     if len(row) > 12 and row[12].strip().upper() == "OK":
                         is_synced = True
                     
                     if not is_synced:
-                        # Recuperiamo i dati in modo sicuro (gestendo righe vuote o corte)
                         raw_text = row[3] if len(row) > 3 else ""
                         prod_id = str(row[10]) if len(row) > 10 else ""
                         
@@ -812,30 +795,31 @@ with st.sidebar:
                                 "row_idx": excel_row_index
                             })
                 
-                # 3. Esecuzione
                 if not rows_to_sync:
                     st.success("Tutto aggiornato! Nessuna nuova riga da sincronizzare.")
                 else:
                     st.info(f"Trovate {len(rows_to_sync)} righe da sincronizzare su Pinecone.")
                     
                     counter = 0
+                    cells_to_update =[] # <-- NOVITÀ: Lista per il batch update
+                    
                     for item in rows_to_sync:
-                        # Upsert su Pinecone
+                        # 1. Scriviamo su Pinecone (che è velocissimo e non ha questi limiti)
                         st.session_state.vdb.add_product(
                             raw_name=item["raw"],
                             normalized_name=item["norm"],
                             category=item["cat"]
                         )
                         
-                        # Aggiorniamo la cella locale (per non riprocessarla al prossimo click immediato)
-                        ws_scontrini.update_cell(item["row_idx"], 13, "OK")
+                        # 2. Prepariamo la cella per Google Sheets, ma NON la inviamo ancora
+                        cells_to_update.append(gspread.Cell(row=item["row_idx"], col=13, value="OK"))
                         
                         counter += 1
                         progress_bar.progress(counter / len(rows_to_sync))
-                        
-                        # Pausa tattica anti-ban Google
-                        if counter % 20 == 0:
-                            time.sleep(1)
+
+                    # --- NOVITÀ: Invio in blocco a Google Sheets (1 sola chiamata API!) ---
+                    with st.spinner("Salvataggio finale su Google Sheets..."):
+                        ws_scontrini.update_cells(cells_to_update)
 
                     st.success(f"✅ Sincronizzazione completata! {counter} vettori aggiunti.")
                     time.sleep(2)
